@@ -1,6 +1,6 @@
 # KVS
 
-A simple **in-memory key value storage** with command line interface.
+A simple **log-based key value storage** with command line interface.
 
 ```
 Usage: kvs.exe [COMMAND]
