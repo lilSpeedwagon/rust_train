@@ -30,6 +30,8 @@ enum Commands {
         /// Key to remove
         key: String,
     },
+    /// Reset storage by removing all of the stored values
+    Reset {}
 }
 
 fn main() -> Result<()>{
@@ -40,14 +42,17 @@ fn main() -> Result<()>{
     match cli.command {
         Some(Commands::Set { key, value }) => {
             store.set(key, value)?;
-        }
+        },
         Some(Commands::Get { key }) => match store.get(key)? {
             Some(value) => println!("{}", value),
             None => println!("Key not found"),
         },
         Some(Commands::Remove { key }) => {
             store.remove(key)?;
-        }
+        },
+        Some(Commands::Reset {}) => {
+            store.reset()?;
+        },
         None => {
             eprintln!("Use --help for usage information.");
             std::process::exit(1);

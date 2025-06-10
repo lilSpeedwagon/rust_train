@@ -118,6 +118,38 @@ fn cli_rm_stored() -> Result<()> {
     Ok(())
 }
 
+// `kvs reset` should remove all of the stored elements.
+#[test]
+fn cli_reset_stored() -> Result<()> {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+    let mut store = KvStore::open(temp_dir.path())?;
+    for i in 1..10 {
+        store.set(format!("key{}", i).to_owned(), format!("value{}", i).to_owned())?;
+    }
+    drop(store);
+
+    Command::cargo_bin("kvs_log")
+        .unwrap()
+        .args(&["reset"])
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(is_empty());
+
+    for i in 1..10 {
+        Command::cargo_bin("kvs_log")
+            .unwrap()
+            .args(&["get", format!("key{}", i).as_str()])
+            .current_dir(&temp_dir)
+            .assert()
+            .success()
+            .stdout(eq("Key not found").trim());
+    }
+
+    Ok(())
+}
+
 #[test]
 fn cli_invalid_get() {
     Command::cargo_bin("kvs_log")

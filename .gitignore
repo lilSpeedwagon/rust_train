@@ -1,1 +1,8 @@
+# Build artifacts
 */target
+
+# Log files
+*.log
+
+# Local env
+.env

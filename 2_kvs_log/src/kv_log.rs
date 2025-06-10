@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use crate::models::{Result, Command};
 use crate::serialize::{serialize};
-use std::fs::{File, OpenOptions};
+use std::fs::{OpenOptions, remove_file};
 
 pub struct KvStore {
     // index: HashMap<String, String>,
@@ -30,8 +30,12 @@ impl KvStore {
         Ok(())
     }
 
+    fn get_default_log_file_path(path: &PathBuf) -> PathBuf {
+        return path.join("kv_1.log");
+    }
+
     pub fn open(path: &Path) -> Result<KvStore> {
-        let mut active_file = path.join("kv_1.log");
+        let mut active_file = Self::get_default_log_file_path(&path.to_path_buf());
         let mut file_paths = Vec::new();
 
         // If the directory exists, read the existing storage files.
@@ -107,6 +111,16 @@ impl KvStore {
     }
 
     pub fn remove(&mut self, key: String) -> Result<()> {
+        Ok(())
+    }
+
+    pub fn reset(&mut self) -> Result<()> {
+        for file_path in &self.files {
+            remove_file(file_path)?;
+        }
+        self.files.clear();
+        self.active_file = Self::get_default_log_file_path(&self.storage_dir);
+
         Ok(())
     }
 }
