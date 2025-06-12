@@ -2,11 +2,13 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use crate::models::{Result, Command};
-use crate::serialize::{serialize};
+use crate::serialize::{serialize, deserialize};
 use std::fs::{OpenOptions, remove_file};
+use std::io::BufReader;
+
 
 pub struct KvStore {
-    // index: HashMap<String, String>,
+    storage: HashMap<String, String>,
     storage_dir: PathBuf,
     files: Vec<PathBuf>,
     active_file: PathBuf,
@@ -15,6 +17,7 @@ pub struct KvStore {
 impl KvStore {
     pub fn new(path: &Path) -> Self {
         KvStore {
+            storage: HashMap::new(),
             storage_dir: path.to_path_buf(),
             files: Vec::new(),
             active_file: path.join("kv_1.log"),
@@ -32,6 +35,40 @@ impl KvStore {
 
     fn get_default_log_file_path(path: &PathBuf) -> PathBuf {
         return path.join("kv_1.log");
+    }
+
+    fn restore_storage(files: &Vec<PathBuf>) -> Result<HashMap::<String, String>> {
+        let mut index = HashMap::<String, String>::new();
+
+        // Iterate through known storage files (expected to be sorted).
+        for file_path in files {
+            // Read each file using a buffered reader.
+            let file = OpenOptions::new()
+                .read(true)
+                .open(file_path)?;
+            let mut reader = BufReader::new(file);
+            
+            // Read commands one by one until the end. Restore the index on the fly.
+            loop {
+                let command = deserialize(&mut reader)?;
+                match command {
+                    Some(cmd) => {
+                        match cmd {
+                            Command::Set { key, value } => {
+                                index.insert(key, value);
+                            },
+                            Command::Remove { key } => {
+                                index.remove(&key);
+                            },
+                            _ => {},
+                        }
+                    },
+                    None => break
+                }
+            }
+        }
+
+        Ok(index)
     }
 
     pub fn open(path: &Path) -> Result<KvStore> {
@@ -57,9 +94,9 @@ impl KvStore {
                     return Err(Box::from(format!("Failed to read directory {}: {}", path.display(), e)));
                 }
             }
-            
-            // If no files exist, create the first log file.
             file_paths.sort();
+
+            // If no files exist, create the first log file.
             if let Some(last_active_file) = file_paths.last() {
                 active_file = last_active_file.clone();
             } else {
@@ -76,9 +113,12 @@ impl KvStore {
             }
             Self::touch_file(&active_file)?;
         }
+
+        let storage = Self::restore_storage(&file_paths)?;
         
         Ok(
             KvStore {
+                storage: storage,
                 storage_dir: path.to_path_buf(),
                 files: file_paths,
                 active_file,
@@ -87,6 +127,8 @@ impl KvStore {
     }
 
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
+        self.storage.insert(key.clone(), value.clone());
+
         OpenOptions::new()
             .append(true)
             .open(&self.active_file)
@@ -107,7 +149,10 @@ impl KvStore {
     }
 
     pub fn get(&self, key: String) -> Result<Option<String>> {
-        Ok(None)
+        match self.storage.get(&key) {
+            Some(value) => Ok(Some(value.clone())),
+            None => Ok(None),
+        }
     }
 
     pub fn remove(&mut self, key: String) -> Result<()> {
