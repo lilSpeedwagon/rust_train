@@ -12,7 +12,7 @@ use crate::serialize::{serialize, deserialize};
 const MAX_SEGMENT_SIZE: u64 = 4_000_000;
 
 pub struct KvStore {
-    storage: HashMap<String, String>,
+    storage_index: HashMap<String, String>,
     storage_dir: PathBuf,
     files: Vec<PathBuf>,
     active_file: PathBuf,
@@ -21,7 +21,7 @@ pub struct KvStore {
 impl KvStore {
     pub fn new(path: &Path) -> Self {
         KvStore {
-            storage: HashMap::new(),
+            storage_index: HashMap::new(),
             storage_dir: path.to_path_buf(),
             files: Vec::new(),
             active_file: path.join("kv_1.log"),
@@ -29,6 +29,7 @@ impl KvStore {
     }
 
     fn touch_file(file_path: &Path) -> std::result::Result<(), io::Error> {
+        log::info!("File {} doesn't exist, creating", file_path.display());
         let file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -46,8 +47,7 @@ impl KvStore {
         return self.storage_dir.join(format!("kv_{}.log", self.files.len() + 1));
     }
 
-    fn restore_storage(files: &Vec<PathBuf>) -> Result<HashMap::<String, String>> {
-        
+    fn restore_index(files: &Vec<PathBuf>) -> Result<HashMap::<String, String>> {
         let mut index = HashMap::<String, String>::new();
 
         // Iterate through known storage files (expected to be sorted).
@@ -88,35 +88,55 @@ impl KvStore {
         Self::touch_file(&self.active_file)
     }
 
-    fn write(&mut self, cmd: &Command) -> Result<()> {
-        OpenOptions::new()
-            .append(true)
-            .open(&self.active_file)
-            .and_then(|mut file| {
-                let serialized_command = serialize(&cmd);
-                let bytes_written = io::Write::write(&mut file, &serialized_command)?;
-                if bytes_written != serialized_command.len() {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!(
-                            "Unable to flush entire command, got {}/{} bytes written",
-                            bytes_written,
-                            serialized_command.len(),
-                        ),
-                    ));
-                }
-                file.sync_all()?;
+    fn write(&mut self, cmd: Command) -> Result<()> {
+        let serialized_command = serialize(&cmd);
+        let command_size = serialized_command.len() as u64;
+        if command_size > MAX_SEGMENT_SIZE {
+            return Err(Box::from(format!("A single log entry size cannot exceed {}", MAX_SEGMENT_SIZE)));
+        }
+        
+        if !self.active_file.exists() {
+            Self::touch_file(&self.active_file)?;
+            self.files.push(self.active_file.clone());
+        }
 
-                let metadata = File::metadata(&file)?;
-                let file_size = metadata.len();
-                log::info!("Active file size {}b vs max size {}b", file_size, MAX_SEGMENT_SIZE);
-                if file_size > MAX_SEGMENT_SIZE {
-                    self.rotate_file()?;
-                }
+        let mut data_is_written = false;
+        while !data_is_written {
+            OpenOptions::new()
+                .append(true)
+                .open(&self.active_file)
+                .and_then(|mut file| {
+                    let metadata = File::metadata(&file)?;
+                    let file_size = metadata.len();
+                    if file_size + command_size > MAX_SEGMENT_SIZE {
+                        self.rotate_file()?;
+                        return Ok(())
+                    }
 
-                Ok(())
-            })
-            .map_err(|e| Box::from(format!("Failed to write to file {}: {}", self.active_file.display(), e)))
+                    let bytes_written = io::Write::write(&mut file, &serialized_command)?;
+                    if bytes_written != serialized_command.len() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!(
+                                "Unable to flush entire command, got {}/{} bytes written",
+                                bytes_written,
+                                serialized_command.len(),
+                            ),
+                        ));
+                    }
+                    file.sync_data()?;
+                    data_is_written = true;
+                    
+                    Ok(())
+                })
+                .map_err(
+                    |e| Box::<dyn std::error::Error>::from(
+                        format!("Failed to write to file {}: {}", self.active_file.display(), e)
+                    )
+                )?;
+        }
+
+        Ok(())
     }
 
     pub fn open(path: &Path) -> Result<KvStore> {
@@ -145,11 +165,9 @@ impl KvStore {
             }
             file_paths.sort();
 
-            // If no files exist, create the first log file.
+            // Use the latest known file as active.
             if let Some(last_active_file) = file_paths.last() {
                 active_file = last_active_file.clone();
-            } else {
-                Self::touch_file(&active_file)?;
             }
             log::info!("{} files found, active record at {}", file_paths.len(), active_file.display());
 
@@ -165,12 +183,12 @@ impl KvStore {
             Self::touch_file(&active_file)?;
         }
 
-        let storage = Self::restore_storage(&file_paths)?;
-        log::info!("Storage index is restored with {} records", storage.len());
+        let storage_index = Self::restore_index(&file_paths)?;
+        log::info!("Storage index is restored with {} records", storage_index.len());
         
         Ok(
             KvStore {
-                storage: storage,
+                storage_index: storage_index,
                 storage_dir: path.to_path_buf(),
                 files: file_paths,
                 active_file,
@@ -179,29 +197,37 @@ impl KvStore {
     }
 
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
-        self.storage.insert(key.clone(), value.clone());
-        let cmd = Command::Set { key: key, value: value };
-        self.write(&cmd)?;
-        Ok(())
+        self.storage_index.insert(key.clone(), value.clone());
+        self.write(Command::Set { key: key, value: value })
+    }
+
+    pub fn remove(&mut self, key: String) -> Result<Option<String>> {
+        match self.storage_index.remove(&key) {
+            Some(value) => {
+                self.write(Command::Remove { key: key })?;
+                return Ok(Some(value));
+            },
+            None => {
+                return Ok(None);
+            },
+        }
     }
 
     pub fn get(&self, key: String) -> Result<Option<String>> {
-        match self.storage.get(&key) {
+        match self.storage_index.get(&key) {
             Some(value) => Ok(Some(value.clone())),
             None => Ok(None),
         }
     }
 
-    pub fn remove(&mut self, key: String) -> Result<()> {
-        Ok(())
-    }
-
     pub fn reset(&mut self) -> Result<()> {
         for file_path in &self.files {
+            log::info!("Removing log file {}", file_path.display());
             remove_file(file_path)?;
         }
         self.files.clear();
         self.active_file = Self::get_default_log_file_path(&self.storage_dir);
+        self.storage_index.clear();
 
         Ok(())
     }
