@@ -1,11 +1,15 @@
 use std::collections::HashMap;
-use std::io::Write;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::fs::{remove_file, File, OpenOptions};
+use std::io::BufReader;
+use log;
+
 use crate::models::{Result, Command};
 use crate::serialize::{serialize, deserialize};
-use std::fs::{OpenOptions, remove_file};
-use std::io::BufReader;
 
+
+const MAX_SEGMENT_SIZE: u64 = 4_000_000;
 
 pub struct KvStore {
     storage: HashMap<String, String>,
@@ -24,7 +28,7 @@ impl KvStore {
         }
     }
 
-    fn touch_file(file_path: &Path) -> Result<()> {
+    fn touch_file(file_path: &Path) -> std::result::Result<(), io::Error> {
         let file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -33,11 +37,17 @@ impl KvStore {
         Ok(())
     }
 
-    fn get_default_log_file_path(path: &PathBuf) -> PathBuf {
-        return path.join("kv_1.log");
+    fn get_default_log_file_path(storage_path: &PathBuf) -> PathBuf {
+        return storage_path.join("kv_1.log");
+    }
+
+    fn get_next_log_file_path(&self) -> PathBuf {
+        // TODO handle external storage file changes
+        return self.storage_dir.join(format!("kv_{}.log", self.files.len() + 1));
     }
 
     fn restore_storage(files: &Vec<PathBuf>) -> Result<HashMap::<String, String>> {
+        
         let mut index = HashMap::<String, String>::new();
 
         // Iterate through known storage files (expected to be sorted).
@@ -71,7 +81,46 @@ impl KvStore {
         Ok(index)
     }
 
+    fn rotate_file(&mut self) -> std::result::Result<(), io::Error> {
+        self.active_file = self.get_next_log_file_path();
+        log::info!("Rotating log file to {}", self.active_file.display());
+        self.files.push(self.active_file.clone());
+        Self::touch_file(&self.active_file)
+    }
+
+    fn write(&mut self, cmd: &Command) -> Result<()> {
+        OpenOptions::new()
+            .append(true)
+            .open(&self.active_file)
+            .and_then(|mut file| {
+                let serialized_command = serialize(&cmd);
+                let bytes_written = io::Write::write(&mut file, &serialized_command)?;
+                if bytes_written != serialized_command.len() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!(
+                            "Unable to flush entire command, got {}/{} bytes written",
+                            bytes_written,
+                            serialized_command.len(),
+                        ),
+                    ));
+                }
+                file.sync_all()?;
+
+                let metadata = File::metadata(&file)?;
+                let file_size = metadata.len();
+                log::info!("Active file size {}b vs max size {}b", file_size, MAX_SEGMENT_SIZE);
+                if file_size > MAX_SEGMENT_SIZE {
+                    self.rotate_file()?;
+                }
+
+                Ok(())
+            })
+            .map_err(|e| Box::from(format!("Failed to write to file {}: {}", self.active_file.display(), e)))
+    }
+
     pub fn open(path: &Path) -> Result<KvStore> {
+        log::info!("Reading {} to restore storage", path.display());
         let mut active_file = Self::get_default_log_file_path(&path.to_path_buf());
         let mut file_paths = Vec::new();
 
@@ -102,9 +151,11 @@ impl KvStore {
             } else {
                 Self::touch_file(&active_file)?;
             }
+            log::info!("{} files found, active record at {}", file_paths.len(), active_file.display());
 
         // If the directory doesn't exist, create it.
         } else {
+            log::info!("{} directory doesn't exist, creating", path.display());
             match std::fs::create_dir_all(path) {
                 Ok(()) => {},
                 Err(e) => {
@@ -115,6 +166,7 @@ impl KvStore {
         }
 
         let storage = Self::restore_storage(&file_paths)?;
+        log::info!("Storage index is restored with {} records", storage.len());
         
         Ok(
             KvStore {
@@ -128,24 +180,9 @@ impl KvStore {
 
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
         self.storage.insert(key.clone(), value.clone());
-
-        OpenOptions::new()
-            .append(true)
-            .open(&self.active_file)
-            .and_then(|mut file| {
-                let command = Command::Set { key, value };
-                let serialized_command = serialize(&command);
-                let bytes_written = file.write(&serialized_command)?;
-                if bytes_written != serialized_command.len() {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Other, 
-                        format!("Unable to flush entire command, got {}/{} bytes written", bytes_written, serialized_command.len())
-                    ));
-                }
-                file.sync_all()?;
-                Ok(())
-            })
-            .map_err(|e| Box::from(format!("Failed to write to file {}: {}", self.active_file.display(), e)))
+        let cmd = Command::Set { key: key, value: value };
+        self.write(&cmd)?;
+        Ok(())
     }
 
     pub fn get(&self, key: String) -> Result<Option<String>> {

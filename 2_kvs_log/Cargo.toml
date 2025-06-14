@@ -9,6 +9,8 @@ clap = { version = "4.5.39", features = ["derive"] }
 predicates = "1.0.0"
 tempfile = "3.0.7"
 walkdir = "2.2.7"
+log = "0.4.27"
+simple_logger = "5.0.0"
 
 [lib]
 test = false
