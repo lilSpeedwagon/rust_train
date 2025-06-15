@@ -46,7 +46,7 @@ fn cli_remove_non_existent_key() {
         .current_dir(&temp_dir)
         .assert()
         .failure()
-        .stdout(eq("Key not found").trim());
+        .stderr(eq("Key not found").trim());
 }
 
 // `kvs set <KEY> <VALUE>` should print nothing and exit with zero.
@@ -214,7 +214,7 @@ fn cli_invalid_subcommand() {
 #[test]
 fn get_stored_value() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut store = KvStore::open(temp_dir.path())?;
+    let mut store = KvStore::open(temp_dir.path().join("storage").as_path())?;
 
     store.set("key1".to_owned(), "value1".to_owned())?;
     store.set("key2".to_owned(), "value2".to_owned())?;
@@ -273,7 +273,7 @@ fn get_non_existent_value() -> Result<()> {
 fn remove_non_existent_key() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let mut store = KvStore::open(temp_dir.path())?;
-    assert!(store.remove("key1".to_owned()).unwrap().is_none());
+    assert!(!store.remove("key1".to_owned()).unwrap());
     Ok(())
 }
 

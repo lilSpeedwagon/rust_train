@@ -1,6 +1,7 @@
 # KVS
 
-A simple **log-based key value storage** with command line interface.
+A simple **log-based key value storage** with command line interface. All commands stored in append-only log files.
+Storage maintains in-memory index storing pointers to value locations in log files.
 
 ```
 Usage: kvs.exe [COMMAND]

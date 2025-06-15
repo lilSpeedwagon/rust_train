@@ -49,7 +49,7 @@ fn main() -> Result<()>{
     }
     simple_logger::SimpleLogger::new().with_level(log_level).init().unwrap();
 
-    let mut store = KvStore::open(Path::new("./"))?;
+    let mut store = KvStore::open(Path::new("./storage"))?;
 
     match cli.command {
         Some(Commands::Set { key, value }) => {
@@ -59,10 +59,10 @@ fn main() -> Result<()>{
             Some(value) => println!("{}", value),
             None => println!("Key not found"),
         },
-        Some(Commands::Remove { key }) => match store.remove(key)? {
-            Some(_) => {},
-            None => {
-                println!("Key not found");
+        Some(Commands::Remove { key }) => {
+            let is_exist = store.remove(key)?;
+            if !is_exist {
+                eprintln!("Key not found");
                 std::process::exit(1);
             }
         },

@@ -1,15 +1,15 @@
-use std::{fmt::format, io::{Error, ErrorKind, Read}};
+use std::io::{Error, ErrorKind, Read};
 use crate::models::{Command, Result};
 
 
-fn serialize_str(s: &String, buffer: &mut Vec<u8>) {
+pub fn serialize_str(s: &String, buffer: &mut Vec<u8>) {
     let len = s.len() as u16;
     buffer.extend(len.to_be_bytes());
     buffer.extend(s.as_bytes());
 }
 
 
-fn deserialize_str<T: Read>(reader: &mut T) -> Result<String> {
+pub fn deserialize_str<T: Read>(reader: &mut T) -> Result<String> {
     let mut size_buffer = [0u8, 2];
     reader.read_exact(&mut size_buffer)?;
     let size = u16::from_be_bytes(size_buffer) as usize;
@@ -31,7 +31,7 @@ pub fn serialize(command: &Command) -> Vec<u8> {
             serialize_str(value, &mut buffer);
             return buffer;
         },
-        Command::Get { key } => {
+        Command::Get { key: _ } => {
             return Vec::new();
         },
         Command::Remove { key } => {
@@ -40,6 +40,14 @@ pub fn serialize(command: &Command) -> Vec<u8> {
             serialize_str(key, &mut buffer);
             return buffer;
         }
+    }
+}
+
+
+pub fn get_value_offset(command: &Command) -> Option<u64> {
+    match command {
+        Command::Set { key, value: _ } => Some((b"s".len() + size_of::<u16>() + key.len()) as u64),
+        _ => None,
     }
 }
 
