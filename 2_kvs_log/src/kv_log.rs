@@ -3,6 +3,7 @@ use std::io::{self, Seek};
 use std::path::{Path, PathBuf};
 use std::fs::{remove_file, File, OpenOptions};
 use std::io::BufReader;
+use std::ffi::OsStr;
 use log;
 
 use crate::models::{Result, Command};
@@ -200,7 +201,9 @@ impl KvStore {
                 Ok(files) => {
                     for file_result in files {
                         if let Ok(file) = file_result {
-                            file_paths.push(file.path());
+                            if file.path().extension() == Some(OsStr::new("log")) {
+                                file_paths.push(file.path());
+                            }
                         }
                     }
                 },
