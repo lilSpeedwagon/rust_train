@@ -100,12 +100,11 @@ impl KvStore {
     }
 
     /// Sets active file path to the next value.
-    /// Doesn't create the file itself. It's done in a lazy manner on the next write.
     fn rotate_file(&mut self) -> std::result::Result<(), io::Error> {
         self.active_file = self.get_next_log_file_path();
         log::info!("Rotating log file to {}", self.active_file.display());
         self.files.push(self.active_file.clone());
-        Self::touch_file(&self.active_file)
+        Ok(())
     }
 
     /// Writes a command to the log storage.
@@ -116,11 +115,6 @@ impl KvStore {
         if command_size > MAX_SEGMENT_SIZE {
             return Err(Box::from(format!("A single log entry size cannot exceed {}", MAX_SEGMENT_SIZE)));
         }
-        
-        if !self.active_file.exists() {
-            self.files.push(self.active_file.clone());
-            Self::touch_file(&self.active_file)?;
-        }
 
         let mut file_idx = self.files.len() - 1;
         let mut file_offset = 0u64;
@@ -128,6 +122,7 @@ impl KvStore {
         while !data_is_written {
             OpenOptions::new()
                 .append(true)
+                .create(true)
                 .open(&self.active_file)
                 .and_then(|mut file| {
                     let metadata = File::metadata(&file)?;
@@ -138,7 +133,7 @@ impl KvStore {
                         return Ok(())
                     }
 
-                    file_offset = file.stream_position()?;
+                    file_offset = file.seek(io::SeekFrom::End(0))?;
                     let bytes_written = io::Write::write(&mut file, &serialized_command)?;
                     if bytes_written != serialized_command.len() {
                         return Err(std::io::Error::new(
@@ -187,7 +182,6 @@ impl KvStore {
     /// Opens a directory as a log-base key-value storage.
     pub fn open(path: &Path) -> Result<KvStore> {
         log::info!("Reading {} to restore storage", path.display());
-        let mut active_file = Self::get_default_log_file_path(&path.to_path_buf());
         let mut file_paths = Vec::new();
 
         // If the directory exists, read the existing storage files.
@@ -213,12 +207,6 @@ impl KvStore {
             }
             file_paths.sort();
 
-            // Use the latest known file as active.
-            if let Some(last_active_file) = file_paths.last() {
-                active_file = last_active_file.clone();
-            }
-            log::info!("{} files found, active record at {}", file_paths.len(), active_file.display());
-
         // If the directory doesn't exist, create it.
         } else {
             log::info!("{} directory doesn't exist, creating", path.display());
@@ -228,13 +216,21 @@ impl KvStore {
                     return Err(Box::from(format!("Failed to create directory {}: {}", path.display(), e)));
                 }
             }
-            Self::touch_file(&active_file)?;
-            file_paths.push(active_file.clone());
         }
 
         let storage_index = Self::restore_index(&file_paths)?;
         log::info!("Storage index is restored with {} records", storage_index.len());
-        
+
+        // Use the latest known file as active. If no files found - use default first file.
+        let mut active_file = Self::get_default_log_file_path(&path.to_path_buf());
+        if let Some(last_active_file) = file_paths.last() {
+            active_file = last_active_file.clone();
+            log::info!("{} files found, active record at {}", file_paths.len(), active_file.display());
+        } else {
+            file_paths.push(active_file.clone());
+            log::info!("no files found, active record at {}", active_file.display());
+        }
+
         Ok(
             KvStore {
                 storage_index: storage_index,
