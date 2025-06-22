@@ -1,7 +1,10 @@
 # KVS
 
 A simple **log-based key value storage** with command line interface. All commands stored in append-only log files.
-Storage maintains in-memory index storing pointers to value locations in log files.
+Storage maintains in-memory index storing pointers to value locations in log files. The log files grow up to
+4.000.000 bytes in size and then the storage rotates write commands to the next file. To save disk space, complete files
+are compacted automatically on rotation. Log file compaction preserves only the latest "set" commands for each key.
+
 
 ```
 Usage: kvs.exe [COMMAND]

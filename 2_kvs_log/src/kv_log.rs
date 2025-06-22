@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::io::{self, Seek};
 use std::path::{Path, PathBuf};
-use std::fs::{remove_file, File, OpenOptions};
+use std::fs::{remove_file, rename, File, OpenOptions};
 use std::io::BufReader;
 use std::ffi::OsStr;
 use log;
 
 use crate::models::{Result, Command};
-use crate::serialize;
+use crate::serialize::{self, get_value_offset};
 
 
 const MAX_SEGMENT_SIZE: u64 = 4_000_000;
@@ -36,17 +36,6 @@ impl KvStore {
         }
     }
 
-    /// Creates an empty file using path `file_path`.
-    fn touch_file(file_path: &Path) -> std::result::Result<(), io::Error> {
-        log::info!("File {} doesn't exist, creating", file_path.display());
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(file_path)?;
-        file.sync_all()?;
-        Ok(())
-    }
-
     /// Get default log file path.
     fn get_default_log_file_path(storage_path: &PathBuf) -> PathBuf {
         return storage_path.join("kv_1.log");
@@ -54,8 +43,13 @@ impl KvStore {
 
     /// Get next active log file path based on the known file paths.
     fn get_next_log_file_path(&self) -> PathBuf {
-        // TODO handle external storage file changes
         return self.storage_dir.join(format!("kv_{}.log", self.files.len() + 1));
+    }
+
+    fn get_tmp_file_path(&self, file_path: &PathBuf) -> PathBuf {
+        let dir_path = file_path.parent().unwrap_or(&self.storage_dir);
+        let file_name = file_path.file_name().unwrap_or(OsStr::new("kv.log")).to_string_lossy();
+        return dir_path.join(format!("_tmp_{}", file_name));
     }
 
     /// Restore storage index by reading a sorted list of log files.
@@ -99,8 +93,130 @@ impl KvStore {
         Ok(index)
     }
 
+    fn compact_log_file(&mut self) -> Result<()> {
+        if self.files.len() == 0 {
+            log::info!("No files to compact!");
+            return Ok(());
+        }
+
+        let file_path = &self.active_file;
+        let file_idx = self.files.len() - 1;
+        log::info!("Compacting log file {}", file_path.display());
+        let mut log_file_commands: Vec<Command> = Vec::new();
+
+        let file = OpenOptions::new()
+                .read(true)
+                .open(file_path)?;
+        let initial_file_size = File::metadata(&file)?.len();
+        let mut reader = BufReader::new(&file);
+        let mut is_compacted = false;
+
+        // Read commands one by one until the end.
+        // If the key doesn't exist in the current index - it can be deleted.
+        // If the known key's position is higher than in the log - it can be deleted.
+        loop {
+            let file_offset = reader.stream_position()?;
+            if let Some(command) = serialize::deserialize(&mut reader)? {
+                let value_offset_opt = serialize::get_value_offset(&command);
+                
+                // If "set" is found in the current index and the position
+                // matches the index position - this is the latest key value.
+                // Otherwise the found command can be compacted (ingored).
+                match command {
+                    Command::Set { key, value} => {
+                        match self.storage_index.get(&key) {
+                            Some(position) => {
+                                let value_offset = file_offset + value_offset_opt.unwrap_or(0);
+                                if value_offset == position.file_offset {
+                                    log_file_commands.push(Command::Set { key, value });
+                                    continue;
+                                }
+                            },
+                            None => {},
+                        }
+                    },
+                    _ => {},
+                }
+                is_compacted = true;
+            } else {
+                break
+            }
+        }
+        drop(reader);
+        drop(file);
+
+        // If no commands ingored - no compaction required.
+        if !is_compacted {
+            log::info!("No records to compact found in {}", file_path.display());
+            return Ok(())
+        }
+
+        // If all records are compacted - just remove the file.
+        if log_file_commands.is_empty() {
+            log::info!("All records in {} are compacted. Deleting the log file.", file_path.display());
+            remove_file(file_path)?;
+            return Ok(())
+        }
+        
+        // Write the compacted commands to a temporary file.
+        // Update the position offsets in the current file,
+        // as the compacted records are probably shifted within the file.
+        let tmp_file_path = self.get_tmp_file_path(&file_path);
+        log::info!("Writing compacted records from {} to {}", file_path.display(), tmp_file_path.display());
+        let mut tmp_file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&tmp_file_path)?;
+        let mut file_offset = 0u64;
+        for cmd in log_file_commands {
+            let serialized_command = serialize::serialize(&cmd);
+            let bytes_written = io::Write::write(&mut tmp_file, &serialized_command)?;
+            if bytes_written != serialized_command.len() {
+                return Err(
+                    Box::from(
+                        std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!(
+                                "Unable to flush entire command, got {}/{} bytes written",
+                                bytes_written,
+                                serialized_command.len(),
+                            ),
+                        )
+                    )
+                );
+            }
+            file_offset += bytes_written as u64;
+            let value_offset = get_value_offset(&cmd).unwrap_or(0);
+            
+            // Insert new positions. We expect to see only "set" commands here.
+            // File index remains the same as we're just compactng a single file.
+            match cmd {
+                Command::Set { key, value: _ } => {
+                    self.storage_index.insert(
+                        key, KvStorePosition { file_idx: file_idx, file_offset: file_offset + value_offset }
+                    );
+                },
+                _ => {},
+            }
+        }
+        tmp_file.sync_all()?;
+        let compacted_file_size = File::metadata(&tmp_file)?.len();
+        drop(tmp_file);
+
+        // Replace the original file with a new file.
+        // TODO apply file transactions here.
+        log::info!("Replacing {} with compacted {}", file_path.display(), tmp_file_path.display());
+        remove_file(file_path)?;
+        rename(tmp_file_path, file_path)?;
+
+        log::info!("Log file {} compaction completed: {} -> {} bytes", file_path.display(), initial_file_size, compacted_file_size);
+
+        Ok(())
+    }
+
     /// Sets active file path to the next value.
-    fn rotate_file(&mut self) -> std::result::Result<(), io::Error> {
+    fn rotate_file(&mut self) -> Result<()> {
+        self.compact_log_file()?;
         self.active_file = self.get_next_log_file_path();
         log::info!("Rotating log file to {}", self.active_file.display());
         self.files.push(self.active_file.clone());
@@ -120,41 +236,37 @@ impl KvStore {
         let mut file_offset = 0u64;
         let mut data_is_written = false;
         while !data_is_written {
-            OpenOptions::new()
+            let mut file = OpenOptions::new()
                 .append(true)
                 .create(true)
-                .open(&self.active_file)
-                .and_then(|mut file| {
-                    let metadata = File::metadata(&file)?;
-                    let file_size = metadata.len();
-                    if file_size + command_size > MAX_SEGMENT_SIZE {
-                        self.rotate_file()?;
-                        file_idx += 1;
-                        return Ok(())
-                    }
+                .open(&self.active_file)?;
+                
+            // If the current active file exceeds max allowed size - try writing to the next file.
+            let file_size = File::metadata(&file)?.len();
+            if file_size + command_size > MAX_SEGMENT_SIZE {
+                self.rotate_file()?;
+                file_idx += 1;
+                continue;
+            }
 
-                    file_offset = file.seek(io::SeekFrom::End(0))?;
-                    let bytes_written = io::Write::write(&mut file, &serialized_command)?;
-                    if bytes_written != serialized_command.len() {
-                        return Err(std::io::Error::new(
+            file_offset = file.seek(io::SeekFrom::End(0))?;
+            let bytes_written = io::Write::write(&mut file, &serialized_command)?;
+            if bytes_written != serialized_command.len() {
+                return Err(
+                    Box::from(
+                        std::io::Error::new(
                             std::io::ErrorKind::Other,
                             format!(
                                 "Unable to flush entire command, got {}/{} bytes written",
                                 bytes_written,
                                 serialized_command.len(),
                             ),
-                        ));
-                    }
-                    file.sync_data()?;
-                    data_is_written = true;
-                    
-                    Ok(())
-                })
-                .map_err(
-                    |e| Box::<dyn std::error::Error>::from(
-                        format!("Failed to write to file {}: {}", self.active_file.display(), e)
+                        )
                     )
-                )?;
+                );
+            }
+            file.sync_data()?;
+            data_is_written = true;
         }
 
         match serialize::get_value_offset(&cmd) {

@@ -1,5 +1,6 @@
 use std::error::Error;
 
+#[derive(Clone)]
 pub enum Command {
     Set { key: String, value: String },
     Get { key: String },
