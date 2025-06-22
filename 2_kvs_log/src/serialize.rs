@@ -3,16 +3,16 @@ use crate::models::{Command, Result};
 
 
 pub fn serialize_str(s: &String, buffer: &mut Vec<u8>) {
-    let len = s.len() as u16;
+    let len = s.len() as u32;
     buffer.extend(len.to_be_bytes());
     buffer.extend(s.as_bytes());
 }
 
 
 pub fn deserialize_str<T: Read>(reader: &mut T) -> Result<String> {
-    let mut size_buffer = [0u8, 2];
+    let mut size_buffer = [0u8; 4];
     reader.read_exact(&mut size_buffer)?;
-    let size = u16::from_be_bytes(size_buffer) as usize;
+    let size = u32::from_be_bytes(size_buffer) as usize;
 
     let mut str_buffer = vec![0u8; size];
     str_buffer.reserve(size);
@@ -46,7 +46,7 @@ pub fn serialize(command: &Command) -> Vec<u8> {
 
 pub fn get_value_offset(command: &Command) -> Option<u64> {
     match command {
-        Command::Set { key, value: _ } => Some((b"s".len() + size_of::<u16>() + key.len()) as u64),
+        Command::Set { key, value: _ } => Some((b"s".len() + size_of::<u32>() + key.len()) as u64),
         _ => None,
     }
 }
