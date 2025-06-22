@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use log;
 use simple_logger;
 use std::path::Path;
+use std::time;
 
 use rust_kvs_log::kv_log::KvStore;
 use rust_kvs_log::models::Result;
@@ -37,7 +38,51 @@ enum Commands {
         key: String,
     },
     /// Reset storage by removing all of the stored values
-    Reset {}
+    Reset {},
+    /// Benchmark storage operations speed by running many get and set operations
+    Benchmark {
+        /// Number of operations to run during the benchmark.
+        operations_count: u32,
+    },
+}
+
+fn benchmark(storage: &mut KvStore, operations_count: u32) -> Result<()> {
+    let mut keys_to_insert = Vec::new();
+    for i in 1..operations_count {
+        keys_to_insert.push(format!("key{}", i).to_string());
+    }
+
+    let mut set_timings = Vec::new();
+    let start_set_total = time::Instant::now();
+    for key in &keys_to_insert {
+        let key_to_set = key.clone();
+        let single_set_start = time::Instant::now();
+        storage.set(key_to_set, "value".to_string())?;
+        set_timings.push(single_set_start.elapsed().as_millis());
+    }
+    let total_set_elapsed = start_set_total.elapsed().as_millis();
+
+    let set_avg = set_timings.iter().sum::<u128>() / set_timings.len() as u128;
+    let set_min = set_timings.iter().min().unwrap();
+    let set_max = set_timings.iter().max().unwrap();
+    print!("Running {} set commands. Total: {}ms. Avg {}ms; Min {}ms; Max {}ms.\n", operations_count, total_set_elapsed, set_avg, set_min, set_max);
+
+    let mut get_timings = Vec::new();
+    let start_get_total = time::Instant::now();
+    for key in &keys_to_insert {
+        let key_to_get = key.clone();
+        let single_get_start = time::Instant::now();
+        storage.get(key_to_get)?;
+        get_timings.push(single_get_start.elapsed().as_millis());
+    }
+    let total_get_elapsed = start_get_total.elapsed().as_millis();
+
+    let get_avg = get_timings.iter().sum::<u128>() / get_timings.len() as u128;
+    let get_min = get_timings.iter().min().unwrap();
+    let get_max = get_timings.iter().max().unwrap();
+    print!("Running {} get commands. Total: {}ms. Avg {}ms; Min {}ms; Max {}ms.\n", operations_count, total_get_elapsed, get_avg, get_min, get_max);
+
+    Ok(())
 }
 
 fn main() -> Result<()>{
@@ -68,6 +113,13 @@ fn main() -> Result<()>{
         },
         Some(Commands::Reset {}) => {
             store.reset()?;
+        },
+        Some(Commands::Benchmark { operations_count }) => {
+            if operations_count == 0 {
+                eprintln!("operations_count must be positive.");
+                std::process::exit(1);
+            }
+            benchmark(&mut store, operations_count)?;
         },
         None => {
             eprintln!("Use --help for usage information.");
