@@ -2,10 +2,10 @@ use clap::{Parser, Subcommand};
 use log;
 use simple_logger;
 use std::path::Path;
-use std::time;
 
-use rust_kvs_log::kv_log::KvStore;
-use rust_kvs_log::models::Result;
+use rust_kvs_server::kv_log::KvStore;
+use rust_kvs_server::models::Result;
+use rust_kvs_server::KvsClient;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -46,22 +46,29 @@ fn main() -> Result<()>{
 
     let mut log_level = log::LevelFilter::Off;
     if cli.verbose != 0 {
-        log_level = log::LevelFilter::Info;
+        log_level = log::LevelFilter::Debug;
     }
     simple_logger::SimpleLogger::new().with_level(log_level).init().unwrap();
 
-    let mut store = KvStore::open(Path::new("./"))?;
+    let data = "hello".as_bytes().to_vec();
 
-    match cli.command {
-        Some(Commands::Set { key, value }) => {},
-        Some(Commands::Get { key }) => {},
-        Some(Commands::Remove { key }) => {},
-        Some(Commands::Reset {}) => {},
-        None => {
-            eprintln!("Use --help for usage information.");
-            std::process::exit(1);
-        }
-    }
+    let mut client = KvsClient::new();
+    client.connect(String::from("127.0.0.1"), 4000)?;
+    let response = client.send(data)?;
+    log::info!("{}", String::from_utf8(response)?);
+
+    //let mut store = KvStore::open(Path::new("./"))?;
+
+    // match cli.command {
+    //     Some(Commands::Set { key, value }) => {},
+    //     Some(Commands::Get { key }) => {},
+    //     Some(Commands::Remove { key }) => {},
+    //     Some(Commands::Reset {}) => {},
+    //     None => {
+    //         eprintln!("Use --help for usage information.");
+    //         std::process::exit(1);
+    //     }
+    // }
 
     return Ok(());
 }

@@ -6,3 +6,4 @@
 
 # Local env
 .env
+.DS_Store
