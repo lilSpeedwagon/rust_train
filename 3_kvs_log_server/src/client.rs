@@ -3,8 +3,14 @@ use std::io::Write;
 use std::net;
 use std::io;
 
+use crate::models;
+use crate::models::Request;
+use crate::serialize;
+use crate::serialize::WriteToBuffer;
 use crate::{Result, Command};
 
+
+const CLIENT_VERSION: u8 = 1u8;
 
 pub struct KvsClient {
     socket_opt: Option<net::TcpStream>,
@@ -49,18 +55,62 @@ impl KvsClient {
         return self.socket_opt.is_some();
     }
 
-    pub fn send(&mut self, data: Vec<u8>) -> Result<Vec<u8>> {
+    fn serialize_request(request: Request) -> Result<Vec<u8>> {
+        let mut buffer = vec!();
+        request.header.version.serialize(&mut buffer)?;
+        request.header.keep_alive.serialize(&mut buffer)?;
+        request.header.command_count.serialize(&mut buffer)?;
+        request.header.reserved.serialize(&mut buffer)?;
+
+        for cmd in request.commands {
+            let data = serialize::serialize(&cmd);
+            buffer.extend(data);
+        }
+
+        Ok(buffer)
+    }
+
+    pub fn execute_one(&mut self, command: Command, keep_alive: bool) -> Result<()> {
+        let commands = vec![command];
+        self.execute(commands, keep_alive)
+    }
+
+    pub fn execute(&mut self, commands: Vec<Command>, keep_alive: bool) -> Result<()> {
+        let mut keep_alive_value = 1u8;
+        if !keep_alive {
+            keep_alive_value = 0u8;
+        }
+        let header = models::RequestHeader {
+            version: CLIENT_VERSION,
+            keep_alive: keep_alive_value,
+            command_count: commands.len() as u16,
+            reserved: 0u32,
+        };
+        let request = models::Request{
+            header: header,
+            commands: commands,
+        };
+        self.send(request)?;
+
+        // TODO keepalive
+        
+        Ok(())
+    }
+    
+    pub fn send(&mut self, request: models::Request) -> Result<models::Response> {
         if !self.is_connected() {
+            // TODO autoconnect/disconnect
             return Err(Box::from(format!("Client is not ready")));
         }
 
         let mut socket = self.socket_opt.as_mut().unwrap();
-
-        log::debug!("Request: {:?}", data);
+        
+        log::debug!("Request: {}", request);
+        
+        let serialized_request = Self::serialize_request(request)?;
         
         let mut writer = io::BufWriter::new(&mut socket);
-        writer.write(data.as_slice())?;
-        writer.write(&[0u8; 1])?;
+        writer.write(serialized_request.as_slice())?;
         writer.flush()?;
         drop(writer);
 
@@ -70,6 +120,6 @@ impl KvsClient {
 
         log::debug!("Response: {:?}", buffer);
         
-        Ok(buffer)
+        Ok(models::Response{})
     }
 }
