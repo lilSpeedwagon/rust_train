@@ -1,13 +1,7 @@
-use std::fmt::Display;
-use std::io::BufRead;
-use std::io::Read;
-use std::io::Write;
 use std::net;
 use std::io;
-use std::mem;
-use std::fmt;
+use std::io::{Read, Write};
 
-use crate::{Result, Command};
 use crate::serialize;
 use crate::models;
 
@@ -22,22 +16,19 @@ impl KvsServer {
         return KvsServer {}
     }
 
-    fn read_header(stream: &mut dyn io::Read) -> Result<models::RequestHeader> {
+    fn read_header(stream: &mut dyn io::Read) -> models::Result<models::RequestHeader> {
         Ok(
             models::RequestHeader{
                 version: serialize::ReadFromStream::deserialize(stream)?,
                 keep_alive: serialize::ReadFromStream::deserialize(stream)?,
                 command_count: serialize::ReadFromStream::deserialize(stream)?,
+                body_size: serialize::ReadFromStream::deserialize(stream)?,
                 reserved: serialize::ReadFromStream::deserialize(stream)?,
             }
         )
     }
 
-    fn read_command(stream: &mut io::BufReader<&net::TcpStream>) -> Result<Option<Command>> {
-        serialize::deserialize(stream)
-    }
-
-    fn handle_request(request: models::Request) -> Result<()> {
+    fn handle_request(request: models::Request) -> models::Result<()> {
         for cmd in request.commands {
             log::info!("Hanlding command {}", cmd);
         }
@@ -45,7 +36,7 @@ impl KvsServer {
         Ok(())
     }
 
-    fn handle_connection(mut stream: &net::TcpStream) -> Result<()> {
+    fn handle_connection(mut stream: &net::TcpStream) -> models::Result<()> {
         log::debug!("Handling incoming connection");
 
         loop {
@@ -54,14 +45,23 @@ impl KvsServer {
             if header.version > SERVER_VERSION {
                 return Err(
                     Box::from(
-                        format!("Unsupported request versin {}, server version: {}", header.version, SERVER_VERSION)
+                        format!("Unsupported request version {}, server version: {}", header.version, SERVER_VERSION)
                     )
                 )
             }
             let keep_alive = header.keep_alive != 0;
+
+            log::debug!("Body size {}", header.body_size);
+            
+            let mut body_buffer = Vec::new();
+            body_buffer.resize(header.body_size as usize, 0u8);
+            reader.read_exact(body_buffer.as_mut_slice())?;
+            drop(reader);
+            
+            let mut body_reader = io::Cursor::new(body_buffer);
             let mut commands = Vec::new();
             for _ in 0..header.command_count {
-                let cmd = Self::read_command(&mut reader)?;
+                let cmd = serialize::deserialize(&mut body_reader)?;
                 if cmd.is_none() {
                     return Err(
                         Box::from(
@@ -71,7 +71,7 @@ impl KvsServer {
                 }
                 commands.push(cmd.unwrap());
             }
-            drop(reader);
+            drop(body_reader);
 
             let request = models::Request{
                 header: header,
@@ -97,7 +97,7 @@ impl KvsServer {
         }
     }
 
-    pub fn listen(&self, host: String, port: u32) -> Result<()> {
+    pub fn listen(&self, host: String, port: u32) -> models::Result<()> {
         let addr = format!("{}:{}", host, port);
         let listener = net::TcpListener::bind(addr)?;
 

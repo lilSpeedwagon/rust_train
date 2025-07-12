@@ -74,7 +74,7 @@ fn main() -> Result<()>{
             std::process::exit(1);
         }
     };
-    client.execute_one(command, false)?;
+    client.execute_one(command, true)?;
 
     return Ok(());
 }
