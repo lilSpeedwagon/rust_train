@@ -81,7 +81,21 @@ fn main() -> Result<()>{
             std::process::exit(1);
         }
     };
-    client.execute_one(command, true)?;
+    
+    let response = client.execute_one(command, false)?;
+    match response.commands.first() {
+        Some(response_command) => {
+            match response_command {
+                models::ResponseCommand::Get { value } => {
+                    log::info!("{}", value);
+                },
+                _ => {},
+            }
+        },
+        None => {
+            eprintln!("Missing response.");
+        }
+    }
 
     return Ok(());
 }

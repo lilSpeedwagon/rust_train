@@ -2,8 +2,9 @@ use std::net;
 use std::io;
 use std::io::{Read, Write};
 
-use crate::serialize;
 use crate::models;
+use crate::serialize;
+use crate::serialize::WriteToBuffer;
 
 const SERVER_VERSION: u8 = 1u8;
 
@@ -28,12 +29,57 @@ impl KvsServer {
         )
     }
 
-    fn handle_request(request: models::Request) -> models::Result<()> {
-        for cmd in request.commands {
-            log::info!("Hanlding command {}", cmd);
+    fn serialize_response(responses: Vec<models::ResponseCommand>) -> models::Result<Vec<u8>> {
+        let command_count = responses.len();
+        let mut body_buffer = Vec::new();
+        for response in responses {
+            match response {
+                models::ResponseCommand::Get { value } => {
+                    body_buffer.write(&[b'g'])?;
+                    serialize::serialize_str(&value, &mut body_buffer);
+                },
+                models::ResponseCommand::Set {} => {
+                    body_buffer.write(&[b's'])?;
+                },
+                models::ResponseCommand::Remove {} => {
+                    body_buffer.write(&[b'r'])?;
+                },
+            };
         }
 
-        Ok(())
+        let header =  models::ResponseHeader{
+            version: SERVER_VERSION,
+            reserved_1: 0u8,
+            command_count: command_count as u16,
+            body_size: body_buffer.len() as u32,
+            reserved_2: 0u32,
+        };
+
+        let mut response_buffer = Vec::new();
+        response_buffer.reserve(size_of::<models::ResponseHeader>() + body_buffer.len());
+        header.version.serialize(&mut response_buffer)?;
+        header.reserved_1.serialize(&mut response_buffer)?;
+        header.command_count.serialize(&mut response_buffer)?;
+        header.body_size.serialize(&mut response_buffer)?;
+        header.reserved_2.serialize(&mut response_buffer)?;
+        response_buffer.extend(body_buffer.iter());
+
+        Ok(response_buffer)
+    }
+
+    fn handle_request(request: models::Request) -> models::Result<Vec<models::ResponseCommand>> {
+        let mut responses = Vec::new();
+        for command in request.commands {
+            log::info!("Hanlding command {}", command);
+            let response_command = match command {
+                models::Command::Get { key: _ } => models::ResponseCommand::Get{value: String::from("value")},
+                models::Command::Set { key: _, value: _ } => models::ResponseCommand::Set{},
+                models::Command::Remove { key: _ } => models::ResponseCommand::Remove{},
+            };
+            responses.push(response_command);
+        }
+
+        Ok(responses)
     }
 
     fn handle_connection(mut stream: &net::TcpStream) -> models::Result<()> {
@@ -78,12 +124,12 @@ impl KvsServer {
                 commands: commands,
             };
             log::debug!("Handling request {}", request);
+            let responses = Self::handle_request(request)?;
 
-            Self::handle_request(request)?;
-
+            let response_data = Self::serialize_response(responses)?;
+            log::debug!("{}", String::from_utf8_lossy(&response_data));
             let mut writer = io::BufWriter::new(&mut stream);
-            let response = b"";
-            writer.write(response.as_slice())?;
+            writer.write(response_data.as_slice())?;
             writer.flush()?;
             drop(writer);
 

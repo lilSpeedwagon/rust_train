@@ -103,7 +103,7 @@ impl KvsClient {
 
         let mut commands= Vec::new();
         commands.reserve(header.command_count as usize);
-        for _ in 1..header.command_count {
+        for _ in 0..header.command_count {
             let cmd_type: u8 = serialize::ReadFromStream::deserialize(&mut body_reader)?;
             match cmd_type {
                 b's' => {
@@ -133,20 +133,20 @@ impl KvsClient {
         )
     }
 
-    pub fn execute_one(&mut self, command: models::Command, keep_alive: bool) -> models::Result<()> {
+    pub fn execute_one(&mut self, command: models::Command, keep_alive: bool) -> models::Result<models::Response> {
         let commands = vec![command];
         self.execute(commands, keep_alive)
     }
 
-    pub fn execute(&mut self, commands: Vec<models::Command>, keep_alive: bool) -> models::Result<()> {
+    pub fn execute(&mut self, commands: Vec<models::Command>, keep_alive: bool) -> models::Result<models::Response> {
         let serialized_request = Self::serialize_request(commands, keep_alive)?;
-        self.send(serialized_request)?;
+        let response = self.send(serialized_request)?;
 
         if !keep_alive {
             self.close()?;
         }
         
-        Ok(())
+        Ok(response)
     }
     
     pub fn send(&mut self, request_data: Vec<u8>) -> models::Result<models::Response> {
