@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::net;
 use std::io;
+use std::time;
 
 use crate::models;
 use crate::serialize;
@@ -26,10 +27,11 @@ impl KvsClient {
         KvsClient { socket_opt: None }
     }
 
-    pub fn connect(&mut self, host: String, port: u32) -> models::Result<()> {
+    pub fn connect(&mut self, host: String, port: u32, timeout: time::Duration) -> models::Result<()> {
         let addr = format!("{}:{}", host, port);
         log::debug!("Connecting to {}...", addr);
         let socket = net::TcpStream::connect(addr)?;
+        socket.set_read_timeout(Some(timeout))?;
         self.socket_opt = Some(socket);
         log::debug!("Connected");
         Ok(())

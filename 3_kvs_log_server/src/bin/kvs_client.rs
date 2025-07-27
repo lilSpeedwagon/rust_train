@@ -1,3 +1,6 @@
+use core::f32;
+use std::time;
+
 use clap::{Parser, Subcommand, ValueEnum};
 use log;
 use simple_logger;
@@ -14,6 +17,9 @@ struct Cli {
     /// Set log level
     #[arg(short, long, default_value = "info")]
     log_level: LogLevel,
+    /// Read timeout in seconds
+    #[arg(short, long, default_value = "30")]
+    read_timeout: f32,
 }
 
 #[derive(Subcommand)]
@@ -57,9 +63,10 @@ fn main() -> Result<()>{
         LogLevel::Error => log::LevelFilter::Error,
     };
     simple_logger::SimpleLogger::new().with_level(log_level).init().unwrap();
+    let timeout = time::Duration::from_secs_f32(cli.read_timeout);
 
     let mut client = KvsClient::new();
-    client.connect(String::from("127.0.0.1"), 4000)?;
+    client.connect(String::from("127.0.0.1"), 4000, timeout)?;
 
     let command = match cli.command {
         Some(Commands::Set { key, value }) => models::Command::Set { key: key, value: value },
