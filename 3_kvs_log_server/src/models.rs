@@ -8,6 +8,7 @@ pub enum Command {
     Set { key: String, value: String },
     Get { key: String },
     Remove { key: String },
+    Reset {},
 }
 
 impl fmt::Display for Command {
@@ -16,6 +17,7 @@ impl fmt::Display for Command {
             Command::Set {key, value} => write!(f, "Set<key={}, value={}>", key, value),
             Command::Get {key} => write!(f, "Get<key={}>", key),
             Command::Remove {key} => write!(f, "Remove<key={}>", key),
+            Command::Reset {} => write!(f, "Reset"),
         }
     }
 }
@@ -58,6 +60,7 @@ pub enum ResponseCommand {
     Set {},
     Get { value: String },
     Remove {},
+    Reset {},
 }
 
 pub struct Response {

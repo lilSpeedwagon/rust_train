@@ -44,6 +44,9 @@ impl KvsServer {
                 models::ResponseCommand::Remove {} => {
                     body_buffer.write(&[b'r'])?;
                 },
+                models::ResponseCommand::Reset {} => {
+                    body_buffer.write(&[b'z'])?;
+                }
             };
         }
 
@@ -75,6 +78,7 @@ impl KvsServer {
                 models::Command::Get { key: _ } => models::ResponseCommand::Get{value: String::from("value")},
                 models::Command::Set { key: _, value: _ } => models::ResponseCommand::Set{},
                 models::Command::Remove { key: _ } => models::ResponseCommand::Remove{},
+                models::Command::Reset { } => models::ResponseCommand::Reset{},
             };
             responses.push(response_command);
         }

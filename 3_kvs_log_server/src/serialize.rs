@@ -99,6 +99,11 @@ pub fn serialize(command: &Command) -> Vec<u8> {
             serialize_str(key, &mut buffer);
             return buffer;
         },
+        Command::Reset { } => {
+            let mut buffer: Vec<u8> = Vec::new();
+            buffer.extend(b"z");
+            return buffer;
+        },
     }
 }
 
@@ -133,8 +138,13 @@ pub fn deserialize<T: io::Read>(reader: &mut T) -> Result<Option<Command>> {
             let key = deserialize_str(reader)?;
             return Ok(Some(Command::Get { key: key }))
         },
+        b'z' => {
+            return Ok(Some(Command::Reset {}))
+        },
         _ => {
-            return Err(Box::new(io::Error::new(io::ErrorKind::Other, format!("Unknown command {}", command_code))));
+            return Err(
+                Box::new(io::Error::new(io::ErrorKind::Other, format!("Unknown command {}", command_code)))
+            );
         }
     }
 }

@@ -33,7 +33,7 @@ impl KvsClient {
         let socket = net::TcpStream::connect(addr)?;
         socket.set_read_timeout(Some(timeout))?;
         self.socket_opt = Some(socket);
-        log::debug!("Connected");
+        log::debug!("Connected. Read timeout {}s", timeout.as_secs_f32());
         Ok(())
     }
 
@@ -115,6 +115,9 @@ impl KvsClient {
                 b'g' => {
                     let value = serialize::deserialize_str(&mut body_reader)?;
                     commands.push(models::ResponseCommand::Get { value: value });
+                },
+                b'z' => {
+                    commands.push(models::ResponseCommand::Reset {});
                 },
                 _ => {
                     return Err(Box::new(io::Error::new(
