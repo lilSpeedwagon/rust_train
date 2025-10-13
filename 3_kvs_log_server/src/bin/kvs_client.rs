@@ -104,7 +104,13 @@ fn main() -> Result<()>{
                 models::ResponseCommand::Set {} => { log::info!("SET OK"); },
                 models::ResponseCommand::Remove {} => { log::info!("REMOVE OK"); },
                 models::ResponseCommand::Reset {} => { log::info!("RESET OK"); },
-                models::ResponseCommand::Get { value } => { log::info!("GET OK {}", value); },
+                models::ResponseCommand::Get { value } => {
+                    match value {
+                        Some(val) => log::info!("GET OK {}", val),
+                        None => log::info!("GET NONE"),
+                    }
+                    
+                },
             }
         },
         None => {

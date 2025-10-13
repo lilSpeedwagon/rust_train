@@ -7,8 +7,8 @@ use std::ffi::OsStr;
 use log;
 
 use crate::models::{Result, Command};
-use crate::serialize::{self, get_value_offset};
-
+use crate::serialize::{self, get_value_offset, ReadFromStream};
+use crate::KVStorage;
 
 const MAX_SEGMENT_SIZE: u64 = 4_000_000;
 
@@ -19,16 +19,16 @@ pub struct KvStorePosition {
 }
 
 /// Key-value log-based storage.
-pub struct KvStore {
+pub struct KvLogStorage {
     storage_index: HashMap<String, KvStorePosition>,
     storage_dir: PathBuf,
     files: Vec<PathBuf>,
     active_file: PathBuf,
 }
 
-impl KvStore {
+impl KvLogStorage {
     pub fn new(path: &Path) -> Self {
-        KvStore {
+        KvLogStorage {
             storage_index: HashMap::new(),
             storage_dir: path.to_path_buf(),
             files: Vec::new(),
@@ -169,7 +169,7 @@ impl KvStore {
             .open(&tmp_file_path)?;
         let mut file_offset = 0u64;
         for cmd in log_file_commands {
-            let serialized_command = serialize::serialize(&cmd);
+            let serialized_command = serialize::serialize(&cmd)?;
             let bytes_written = io::Write::write(&mut tmp_file, &serialized_command)?;
             if bytes_written != serialized_command.len() {
                 return Err(
@@ -209,7 +209,10 @@ impl KvStore {
         remove_file(file_path)?;
         rename(tmp_file_path, file_path)?;
 
-        log::info!("Log file {} compaction completed: {} -> {} bytes", file_path.display(), initial_file_size, compacted_file_size);
+        log::info!(
+            "Log file {} compaction completed: {} -> {} bytes",
+            file_path.display(), initial_file_size, compacted_file_size
+        );
 
         Ok(())
     }
@@ -226,13 +229,13 @@ impl KvStore {
     /// Writes a command to the log storage.
     /// If the command contains a value, it's position is returned.
     fn write(&mut self, cmd: Command) -> Result<Option<KvStorePosition>> {
-        let serialized_command = serialize::serialize(&cmd);
+        let serialized_command = serialize::serialize(&cmd)?;
         let command_size = serialized_command.len() as u64;
         if command_size > MAX_SEGMENT_SIZE {
             return Err(Box::from(format!("A single log entry size cannot exceed {}", MAX_SEGMENT_SIZE)));
         }
 
-        let mut file_idx = self.files.len() - 1;
+        let mut file_idx = if !self.files.is_empty() { self.files.len() - 1 } else { 0 };
         let mut file_offset = 0u64;
         let mut data_is_written = false;
         while !data_is_written {
@@ -288,11 +291,15 @@ impl KvStore {
 
         let mut reader = BufReader::new(file);
         reader.seek(io::SeekFrom::Start(position.file_offset))?;
-        serialize::deserialize_str(&mut reader)
+        
+        match String::deserialize(&mut reader) {
+            Ok(result) => Ok(result),
+            Err(err) => Err(Box::new(err)),
+        }
     }
 
     /// Opens a directory as a log-base key-value storage.
-    pub fn open(path: &Path) -> Result<KvStore> {
+    pub fn open(path: &Path) -> Result<KvLogStorage> {
         log::info!("Reading {} to restore storage", path.display());
         let mut file_paths = Vec::new();
 
@@ -344,7 +351,7 @@ impl KvStore {
         }
 
         Ok(
-            KvStore {
+            KvLogStorage {
                 storage_index: storage_index,
                 storage_dir: path.to_path_buf(),
                 files: file_paths,
@@ -352,9 +359,11 @@ impl KvStore {
             }
         )
     }
+}
 
+impl KVStorage for KvLogStorage {
     /// Set key `key` to value `value`.
-    pub fn set(&mut self, key: String, value: String) -> Result<()> {
+    fn set(&mut self, key: String, value: String) -> Result<()> {
         let pos = self.write(Command::Set { key: key.clone(), value: value })?.unwrap();
         self.storage_index.insert(key, pos);
         Ok(())
@@ -362,7 +371,7 @@ impl KvStore {
 
     /// Removes key `key` from the storage.
     /// Returns `true` if the key existed.
-    pub fn remove(&mut self, key: String) -> Result<bool> {
+    fn remove(&mut self, key: String) -> Result<bool> {
         match self.storage_index.remove(&key) {
             Some(_) => {
                 self.write(Command::Remove { key: key })?;
@@ -375,7 +384,7 @@ impl KvStore {
     }
 
     /// Gets value with the key `key`. Returns `None` if the key doesn't exist in the storage.
-    pub fn get(&self, key: String) -> Result<Option<String>> {
+    fn get(&self, key: String) -> Result<Option<String>> {
         match self.storage_index.get(&key) {
             Some(position) => {
                 let value = self.read_value(&position)?;
@@ -386,7 +395,7 @@ impl KvStore {
     }
 
     /// Removes all records in the storage.
-    pub fn reset(&mut self) -> Result<()> {
+    fn reset(&mut self) -> Result<()> {
         for file_path in &self.files {
             log::info!("Removing log file {}", file_path.display());
             remove_file(file_path)?;

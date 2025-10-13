@@ -1,11 +1,8 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, ValueEnum};
 use log;
 use simple_logger;
-use std::path::Path;
-use std::time;
-use std::fmt::Display;
 
-use rust_kvs_server::{Result, KvsServer};
+use rust_kvs_server::{models, server, storage};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -14,11 +11,14 @@ struct Cli {
     #[arg(short = 'H', long, default_value = "127.0.0.1")]
     host: String,
     /// Server port
-    #[arg(short, long, default_value = "4000")]
+    #[arg(short = 'P', long, default_value = "4000")]
     port: u32,
     /// Storage engine type
     #[arg(short, long, default_value = "kvs")]
     engine: EngineType,
+    /// Storage path
+    #[arg(short, long, default_value = "./")]
+    path: String,
     /// Set log level
     #[arg(short, long, default_value = "info")]
     log_level: LogLevel,
@@ -32,7 +32,7 @@ enum EngineType {
     Sled,
 }
 
-impl Display for EngineType {
+impl std::fmt::Display for EngineType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", match &self {
             EngineType::Kvs => "kvs",
@@ -49,7 +49,7 @@ enum LogLevel {
     Error,
 }
 
-fn main() -> Result<()>{
+fn main() -> models::Result<()>{
     let cli = Cli::parse();
 
     let log_level = match cli.log_level {
@@ -60,9 +60,15 @@ fn main() -> Result<()>{
     };
     simple_logger::SimpleLogger::new().with_level(log_level).init().unwrap();
 
-    println!("starting server at {}:{} with {} engine", cli.host, cli.port, cli.engine);
+    log::info!("Starting server at {}:{} with {} engine", cli.host, cli.port, cli.engine);
+    
+    let storage_path = std::path::Path::new(&cli.path);
+    let engine = match cli.engine {
+        EngineType::Kvs => storage::KvLogStorage::open(storage_path),
+        EngineType::Sled => panic!("Not implemented"),
+    }?;
 
-    let server = KvsServer::new();
+    let mut server = server::KvsServer::new(Box::new(engine));
     server.listen(cli.host, cli.port)?;
 
     return Ok(());

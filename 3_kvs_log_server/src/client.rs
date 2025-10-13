@@ -5,7 +5,7 @@ use std::time;
 
 use crate::models;
 use crate::serialize;
-use crate::serialize::WriteToBuffer;
+use crate::serialize::{WriteToBuffer, ReadFromStream};
 
 
 const CLIENT_VERSION: u8 = 1u8;
@@ -58,7 +58,7 @@ impl KvsClient {
         let cmd_count = commands.len();
         let mut cmd_buffer = vec!();
         for cmd in commands {
-            let data = serialize::serialize(&cmd);
+            let data = serialize::serialize(&cmd)?;
             cmd_buffer.extend(data);
         }
 
@@ -113,7 +113,7 @@ impl KvsClient {
                     commands.push(models::ResponseCommand::Remove {});
                 },
                 b'g' => {
-                    let value = serialize::deserialize_str(&mut body_reader)?;
+                    let value = Option::<String>::deserialize(&mut body_reader)?;
                     commands.push(models::ResponseCommand::Get { value: value });
                 },
                 b'z' => {
@@ -157,8 +157,6 @@ impl KvsClient {
             // TODO autoconnect/disconnect
             return Err(Box::from(format!("Client is not ready")));
         }
-
-        log::debug!("{}", String::from_utf8_lossy(&request_data));
 
         let mut socket = self.socket_opt.as_mut().unwrap();
         

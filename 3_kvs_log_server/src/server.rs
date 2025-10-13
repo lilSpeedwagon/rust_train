@@ -5,16 +5,17 @@ use std::io::{Read, Write};
 use crate::models;
 use crate::serialize;
 use crate::serialize::WriteToBuffer;
+use crate::storage;
 
 const SERVER_VERSION: u8 = 1u8;
 
 pub struct KvsServer {
-    
+    engine: Box<dyn storage::KVStorage>,
 }
 
 impl KvsServer {
-    pub fn new() -> KvsServer {
-        return KvsServer {}
+    pub fn new(engine: Box<dyn storage::KVStorage>) -> KvsServer {
+        KvsServer{ engine: engine }
     }
 
     fn read_header(stream: &mut dyn io::Read) -> models::Result<models::RequestHeader> {
@@ -36,7 +37,7 @@ impl KvsServer {
             match response {
                 models::ResponseCommand::Get { value } => {
                     body_buffer.write(&[b'g'])?;
-                    serialize::serialize_str(&value, &mut body_buffer);
+                    value.serialize(&mut body_buffer)?;
                 },
                 models::ResponseCommand::Set {} => {
                     body_buffer.write(&[b's'])?;
@@ -70,15 +71,29 @@ impl KvsServer {
         Ok(response_buffer)
     }
 
-    fn handle_request(request: models::Request) -> models::Result<Vec<models::ResponseCommand>> {
+    fn handle_request(&mut self, request: models::Request) -> models::Result<Vec<models::ResponseCommand>> {
         let mut responses = Vec::new();
+        let engine = self.engine.as_mut();
+
         for command in request.commands {
             log::info!("Hanlding command {}", command);
             let response_command = match command {
-                models::Command::Get { key: _ } => models::ResponseCommand::Get{value: String::from("value")},
-                models::Command::Set { key: _, value: _ } => models::ResponseCommand::Set{},
-                models::Command::Remove { key: _ } => models::ResponseCommand::Remove{},
-                models::Command::Reset { } => models::ResponseCommand::Reset{},
+                models::Command::Get { key } => {
+                    let value = engine.get(key)?;
+                    models::ResponseCommand::Get{value: value}
+                },
+                models::Command::Set { key, value } => {
+                    engine.set(key, value)?;
+                    models::ResponseCommand::Set{}
+                },
+                models::Command::Remove { key } => {
+                    engine.remove(key)?;
+                    models::ResponseCommand::Remove{}
+                },
+                models::Command::Reset { } => {
+                    engine.reset()?;
+                    models::ResponseCommand::Reset{}
+                },
             };
             responses.push(response_command);
         }
@@ -86,7 +101,7 @@ impl KvsServer {
         Ok(responses)
     }
 
-    fn handle_connection(mut stream: &net::TcpStream) -> models::Result<()> {
+    fn handle_connection(&mut self, mut stream: &net::TcpStream) -> models::Result<()> {
         log::debug!("Handling incoming connection");
 
         loop {
@@ -128,7 +143,7 @@ impl KvsServer {
                 commands: commands,
             };
             log::debug!("Handling request {}", request);
-            let responses = Self::handle_request(request)?;
+            let responses = self.handle_request(request)?;
 
             let response_data = Self::serialize_response(responses)?;
             log::debug!("{}", String::from_utf8_lossy(&response_data));
@@ -147,14 +162,14 @@ impl KvsServer {
         }
     }
 
-    pub fn listen(&self, host: String, port: u32) -> models::Result<()> {
+    pub fn listen(&mut self, host: String, port: u32) -> models::Result<()> {
         let addr = format!("{}:{}", host, port);
         let listener = net::TcpListener::bind(addr)?;
 
         for connection_result in listener.incoming() {
             match connection_result {
                 Ok(mut stream) => {
-                    match Self::handle_connection(&mut stream) {
+                    match self.handle_connection(&mut stream) {
                         Ok(_) => {},
                         Err(err) => {
                             log::error!("Request handling error: {}", err);

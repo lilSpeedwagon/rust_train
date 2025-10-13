@@ -11,6 +11,21 @@ pub enum Command {
     Reset {},
 }
 
+#[derive(Clone)]
+pub enum EngineType {
+    Kvs,
+    Sled,
+}
+
+impl std::fmt::Display for EngineType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", match &self {
+            EngineType::Kvs => "kvs",
+            EngineType::Sled => "sled",
+        })
+    }
+}
+
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -58,7 +73,7 @@ pub struct ResponseHeader {
 
 pub enum ResponseCommand {
     Set {},
-    Get { value: String },
+    Get { value: Option<String> },
     Remove {},
     Reset {},
 }
