@@ -63,12 +63,12 @@ fn main() -> models::Result<()>{
     log::info!("Starting server at {}:{} with {} engine", cli.host, cli.port, cli.engine);
     
     let storage_path = std::path::Path::new(&cli.path);
-    let engine = match cli.engine {
-        EngineType::Kvs => storage::KvLogStorage::open(storage_path),
-        EngineType::Sled => panic!("Not implemented"),
-    }?;
+    let engine: Box<dyn storage::KVStorage> = match cli.engine {
+        EngineType::Kvs => Box::new(storage::KvLogStorage::open(storage_path)?),
+        EngineType::Sled => Box::new(storage::SledStorage::open(storage_path)?),
+    };
 
-    let mut server = server::KvsServer::new(Box::new(engine));
+    let mut server = server::KvsServer::new(engine);
     server.listen(cli.host, cli.port)?;
 
     return Ok(());
