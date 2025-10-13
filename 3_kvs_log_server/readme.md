@@ -12,31 +12,36 @@ are compacted automatically on rotation. Log file compaction preserves only the 
 A simple server interface over a KVS engine.
 
 ```
-Usage: kvs_server [OPTIONS]
+Usage: kvs_server.exe [OPTIONS]
 
 Options:
   -H, --host <HOST>
           Server hostname
-          
+
           [default: 127.0.0.1]
 
-  -p, --port <PORT>
+  -P, --port <PORT>
           Server port
-          
+
           [default: 4000]
 
   -e, --engine <ENGINE>
           Storage engine type
-          
+
           [default: kvs]
 
           Possible values:
           - kvs:  Custom WAL-based key-value storage
           - sled: Sled storage
 
+  -p, --path <PATH>
+          Storage path
+
+          [default: ./]
+
   -l, --log-level <LOG_LEVEL>
           Set log level
-          
+
           [default: info]
           [possible values: debug, info, warning, error]
 
@@ -44,7 +49,7 @@ Options:
           Print help (see a summary with '-h')
 
   -V, --version
-          Print version
+          Print versio
 ```
 
 Run in the dev mode with:
@@ -64,7 +69,7 @@ cargo test
 A simple KVS Server client executes a single command at a time as a command line tool and then exits.
 
 ```
-Usage: kvs_client [OPTIONS] [COMMAND]
+Usage: kvs_client.exe [OPTIONS] [COMMAND]
 
 Commands:
   set     Set value `value` for the key `key`
@@ -74,6 +79,8 @@ Commands:
   help    Print this message or the help of the given subcommand(s)
 
 Options:
+  -H, --host <HOST>                  Server hostname [default: 127.0.0.1]
+  -P, --port <PORT>                  Server port [default: 4000]
   -l, --log-level <LOG_LEVEL>        Set log level [default: info] [possible values: debug, info, warning, error]
   -r, --read-timeout <READ_TIMEOUT>  Read timeout in seconds [default: 30]
   -h, --help                         Print help

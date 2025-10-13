@@ -18,7 +18,7 @@ struct Cli {
     #[arg(short = 'H', long, default_value = "127.0.0.1")]
     host: String,
     /// Server port
-    #[arg(short, long, default_value = "4000")]
+    #[arg(short = 'P', long, default_value = "4000")]
     port: u32,
     /// Set log level
     #[arg(short, long, default_value = "info")]
