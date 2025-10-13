@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 
 use crate::models;
 use crate::serialize;
-use crate::serialize::WriteToBuffer;
+use crate::serialize::WriteToStream;
 use crate::storage;
 
 const SERVER_VERSION: u8 = 1u8;

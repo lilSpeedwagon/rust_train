@@ -80,14 +80,14 @@ impl ReadFromStream for String {
 }
 
 
-pub trait WriteToBuffer {
+pub trait WriteToStream {
     fn serialize(&self, buffer: &mut Vec<u8>) -> result::Result<(), io::Error>;
 }
 
 macro_rules! impl_write_to_stream {
     ($($t:ty),*) => {
         $(
-            impl WriteToBuffer for $t {
+            impl WriteToStream for $t {
                 fn serialize(&self, buffer: &mut Vec<u8>) -> result::Result<(), io::Error> {
                     buffer.extend(self.to_be_bytes());
                     Ok(())
@@ -100,7 +100,7 @@ macro_rules! impl_write_to_stream {
 impl_write_to_stream!(u8, u16, u32, u64);
 
 
-impl<T: WriteToBuffer> WriteToBuffer for Option<T> {
+impl<T: WriteToStream> WriteToStream for Option<T> {
     fn serialize(&self, buffer: &mut Vec<u8>) -> result::Result<(), io::Error> {
         let has_value = self.is_some();
         let bytes = if has_value {[1u8]} else {[0u8]};
@@ -114,7 +114,7 @@ impl<T: WriteToBuffer> WriteToBuffer for Option<T> {
 }
 
 
-impl WriteToBuffer for String {
+impl WriteToStream for String {
     fn serialize(&self, buffer: &mut Vec<u8>) -> result::Result<(), io::Error> {
         let len = self.len() as u32;
         buffer.extend(len.to_be_bytes());

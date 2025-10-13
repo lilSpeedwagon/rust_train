@@ -5,7 +5,7 @@ use std::time;
 
 use crate::models;
 use crate::serialize;
-use crate::serialize::{WriteToBuffer, ReadFromStream};
+use crate::serialize::{WriteToStream, ReadFromStream};
 
 
 const CLIENT_VERSION: u8 = 1u8;
