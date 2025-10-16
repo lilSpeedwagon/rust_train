@@ -7,6 +7,11 @@ Storage maintains in-memory index storing pointers to value locations in log fil
 4.000.000 bytes in size and then the storage rotates write commands to the next file. To save disk space, complete files
 are compacted automatically on rotation. Log file compaction preserves only the latest "set" commands for each key.
 
+The server supports 2 storage engines:
+
+- `kvs` a custom key value storage implementation based on WAL.
+- `sled` open source implementation of a KV store.
+
 ## Server
 
 A simple server interface over a KVS engine.
@@ -99,6 +104,10 @@ Test with:
 cargo test
 ```
 
-## Communication Protocol
+## Benchmarks
 
-_TBD_
+You can run benchmarks to compare set/get operation time for different storage engines.
+
+```shell
+cargo bench
+```
