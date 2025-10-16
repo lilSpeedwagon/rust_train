@@ -514,6 +514,7 @@ dependencies = [
  "clap",
  "log",
  "predicates",
+ "scopeguard",
  "simple_logger",
  "sled",
  "tempfile",
