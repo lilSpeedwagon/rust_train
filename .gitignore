@@ -1,9 +1,12 @@
 # Build artifacts
 */target
 
-# Log files
-*.log
-
 # Local env
 .env
 .DS_Store
+
+# Db files.
+*.log
+conf
+db
+snap.*

@@ -60,7 +60,7 @@ fn main() -> models::Result<()>{
     };
     simple_logger::SimpleLogger::new().with_level(log_level).init().unwrap();
 
-    log::info!("Starting server at {}:{} with {} engine", cli.host, cli.port, cli.engine);
+    log::info!("Starting server at {}:{} with {} engine at {}", cli.host, cli.port, cli.engine, cli.path);
     
     let storage_path = std::path::Path::new(&cli.path);
     let engine: Box<dyn storage::KVStorage> = match cli.engine {
