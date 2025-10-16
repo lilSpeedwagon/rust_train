@@ -52,7 +52,7 @@ fn cli_invalid_port() {
 fn cli_invalid_path() {
     let temp_dir = TempDir::new().unwrap();
     let mut cmd = Command::cargo_bin("kvs_server").unwrap();
-    cmd.args(&["--path", "*"])
+    cmd.args(&["--path", "/Volumes/nonexistent_drive/somefile"])
         .current_dir(&temp_dir)
         .assert()
         .failure();
