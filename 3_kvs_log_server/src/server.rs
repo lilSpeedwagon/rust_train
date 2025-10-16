@@ -76,7 +76,7 @@ impl KvsServer {
         let engine = self.engine.as_mut();
 
         for command in request.commands {
-            log::info!("Hanlding command {}", command);
+            log::info!("Handling command {}", command);
             let response_command = match command {
                 models::Command::Get { key } => {
                     let value = engine.get(key)?;
