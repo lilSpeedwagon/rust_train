@@ -24,6 +24,7 @@ impl KVStorage for SledStorage {
     fn set(&mut self, key: String, value: String) -> models::Result<()> {
         let val_inner = sled::IVec::from(value.as_bytes());
         self.db.insert(key, val_inner)?;
+        self.db.flush()?;
         Ok(())
     }
 
@@ -31,6 +32,7 @@ impl KVStorage for SledStorage {
     /// Returns `true` if the key existed.
     fn remove(&mut self, key: String) -> models::Result<bool> {
         let old_value = self.db.remove(key)?;
+        self.db.flush()?;
         Ok(old_value.is_some())
     }
 
@@ -46,6 +48,7 @@ impl KVStorage for SledStorage {
     /// Removes all records in the storage.
     fn reset(&mut self) -> models::Result<()> {
         self.db.clear()?;
+        self.db.flush()?;
         Ok(())
     }
 }
