@@ -121,7 +121,7 @@ impl KvLogStorage {
                 
                 // If "set" is found in the current index and the position
                 // matches the index position - this is the latest key value.
-                // Otherwise the found command can be compacted (ingored).
+                // Otherwise the found command can be compacted (ignored).
                 match command {
                     Command::Set { key, value} => {
                         match self.storage_index.get(&key) {
@@ -145,7 +145,7 @@ impl KvLogStorage {
         drop(reader);
         drop(file);
 
-        // If no commands ingored - no compaction required.
+        // If no commands ignored - no compaction required.
         if !is_compacted {
             log::info!("No records to compact found in {}", file_path.display());
             return Ok(())
@@ -204,9 +204,7 @@ impl KvLogStorage {
         drop(tmp_file);
 
         // Replace the original file with a new file.
-        // TODO apply file transactions here.
         log::info!("Replacing {} with compacted {}", file_path.display(), tmp_file_path.display());
-        remove_file(file_path)?;
         rename(tmp_file_path, file_path)?;
 
         log::info!(
