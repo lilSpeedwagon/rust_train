@@ -25,15 +25,6 @@ struct KvLogStorageImpl {
 }
 
 impl KvLogStorageImpl {
-    pub fn new(path: &Path) -> Self {
-        KvLogStorageImpl {
-            storage_index: HashMap::new(),
-            storage_dir: path.to_path_buf(),
-            files: Vec::new(),
-            active_file: path.join("kv_1.log"),
-        }
-    }
-
     /// Get default log file path.
     fn get_default_log_file_path(storage_path: &PathBuf) -> PathBuf {
         return storage_path.join("kv_1.log");

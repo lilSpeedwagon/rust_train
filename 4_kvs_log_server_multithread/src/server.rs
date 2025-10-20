@@ -179,12 +179,14 @@ impl KvsServer {
             match connection_result {
                 Ok(stream) => {
                     let storage = self.engine.clone();
-                    self.thread_pool.spawn(move || {
+                    if let Err(err) = self.thread_pool.spawn(move || {
                         match handle_connection(storage, stream) {
                             Ok(_) => {},
                             Err(err) => { log::error!("Request handling error: {}", err) }
                         }
-                    });
+                    }) {
+                        log::error!("Cannot spawn a new thread to handle connection: {}", err);    
+                    }
                 },
                 Err(err) => {
                     log::error!("Cannot handle incoming connection: {}", err);
