@@ -159,14 +159,14 @@ fn handle_connection(mut storage: kv_log::KvLogStorage, mut stream: net::TcpStre
 }
 
 pub struct KvsServer {
-    thread_pool: threads::naive::NaiveThreadPool,
+    thread_pool: threads::shared::SharedThreadPool,
     engine: storage::KvLogStorage,
 }
 
 impl KvsServer {
-    pub fn new(engine: storage::KvLogStorage) -> KvsServer {
+    pub fn new(engine: storage::KvLogStorage, thread_pool_size: usize) -> KvsServer {
         KvsServer{
-            thread_pool: threads::naive::NaiveThreadPool::new(),
+            thread_pool: threads::shared::SharedThreadPool::new(thread_pool_size),
             engine: engine,
         }
     }

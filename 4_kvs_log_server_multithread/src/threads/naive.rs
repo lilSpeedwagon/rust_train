@@ -14,7 +14,7 @@ impl NaiveThreadPool {
 }
 
 impl base::ThreadPool for NaiveThreadPool {
-    fn spawn<F>(&self, job: F) -> models::Result<()> where F: FnOnce() + Send + 'static {
+    fn spawn<F>(&mut self, job: F) -> models::Result<()> where F: FnOnce() + Send + 'static {
         let handle = std::thread::spawn(job);
         let mut handlers_list = self.thread_handlers.lock().unwrap_or_else(|e| e.into_inner());
         handlers_list.push(handle);
