@@ -1,4 +1,5 @@
 use crossbeam::deque;
+use log;
 
 use crate::threads::base::ThreadPool;
 use crate::models;
@@ -15,6 +16,40 @@ pub struct SharedThreadPool {
     threads: Vec<std::thread::JoinHandle<()>>,
 }
 
+fn steal_msg(shared_injector: &std::sync::Arc<deque::Injector<SharedMessage>>) -> Option<SharedMessage> {
+    match shared_injector.steal() {
+        deque::Steal::Empty | deque::Steal::Retry => None,
+        deque::Steal::Success(msg) => Some(msg),
+    }
+}
+
+
+/// A single thread pool worker function.
+/// In polls the injector dequeue for new jobs in a loop.
+/// If a terminate message is received, it exits.
+fn thread_handle(shared_injector: std::sync::Arc<deque::Injector<SharedMessage>>) {
+    loop {
+        if let Some(msg) = steal_msg(&shared_injector) {
+            match msg {
+                SharedMessage::NewJob(job) => {
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job())) {
+                        Ok(_) => {},
+                        Err(err) => {
+                            log::error!("Job in threapool panicked: {}", err.downcast_ref::<&str>().unwrap_or(&""));
+                        }
+                    }
+                },
+                SharedMessage::Terminate => {
+                    log::debug!("Thread pool worker received the terminate signal. Exiting.");
+                    return
+                },
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
 
 /// A shared thread pool of constant size.
 /// Worker threads are preallocated on startup.
@@ -28,27 +63,7 @@ impl SharedThreadPool {
         let mut threads = Vec::with_capacity(size);
         for _ in 0..size {
             let injector_ptr = injector.clone();
-            let thread_handle = std::thread::spawn(
-                move || {
-                    loop {
-                        match injector_ptr.steal() {
-                            deque::Steal::Empty | deque::Steal::Retry => {
-                                std::thread::sleep(std::time::Duration::from_millis(10));
-                            },
-                            deque::Steal::Success(msg) => {
-                                match msg {
-                                    SharedMessage::NewJob(job) => {
-                                        job();
-                                    },
-                                    SharedMessage::Terminate => {
-                                        break;
-                                    },
-                                }
-                            }
-                        }
-                    }
-                }
-            );
+            let thread_handle = std::thread::spawn(move || thread_handle(injector_ptr));
             threads.push(thread_handle);
         }
 
@@ -74,7 +89,12 @@ impl Drop for SharedThreadPool {
         }
 
         for thread in self.threads.drain(..) {
-            let _ = thread.join();
+            match thread.join() {
+                Ok(_) => {},
+                Err(err) => {
+                    log::warn!("Thread finished with err: {}", err.downcast_ref::<&str>().unwrap_or(&""));
+                }
+            }
         }
     }
 }
@@ -123,22 +143,45 @@ fn test_shared_thread_pool_multiple_tasks() {
 #[test]
 fn test_shared_thread_pool_teardown() {
     let pool_size = 2;
+    let flag = std::sync::Arc::new(std::sync::Mutex::new(false));
+    let flag_clone = std::sync::Arc::clone(&flag);
+
     {
         let mut pool = SharedThreadPool::new(pool_size);
-
-        let flag = std::sync::Arc::new(std::sync::Mutex::new(false));
-        let flag_clone = std::sync::Arc::clone(&flag);
-
         pool.spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(50));
             let mut done = flag_clone.lock().unwrap();
             *done = true;
         }).unwrap();
-
-        // Make sure even if the pool is dropped the job is finished.
-        drop(pool);
-
-        assert_eq!(*flag.lock().unwrap(), true);
     }
-    // If we reach here without panic, teardown worked
+    
+    // Make sure even if the pool is dropped the job is finished.
+    assert_eq!(*flag.lock().unwrap(), true);
 }
+
+/// Even if a spawned job panics, we still should be able to continue using the pool.
+#[test]
+fn test_shared_thread_pool_panic() {
+    let pool_size = 1;
+    {
+        // Run a panicking job.
+        let mut pool = SharedThreadPool::new(pool_size);
+        pool.spawn(move || { panic!("Thread panicking!"); }).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Make sure we still can run a regular job.
+        let result = std::sync::Arc::new(std::sync::Mutex::new(0));
+        let result_clone = std::sync::Arc::clone(&result);
+
+        pool.spawn(move || {
+            let mut num = result_clone.lock().unwrap();
+            *num = 42;
+        }).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        assert_eq!(*result.lock().unwrap(), 42);
+    }
+}
+
