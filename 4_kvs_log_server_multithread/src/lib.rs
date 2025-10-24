@@ -7,5 +7,5 @@ pub mod storage;
 pub mod models;
 pub mod server;
 pub mod client;
-mod threads;
+pub mod threads;
 mod serialize;

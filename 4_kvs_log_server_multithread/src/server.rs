@@ -8,7 +8,6 @@ use crate::serialize::WriteToStream;
 use crate::storage;
 use crate::storage::kv_log;
 use crate::threads;
-use crate::threads::base::ThreadPool;
 
 const SERVER_VERSION: u8 = 1u8;
 
@@ -159,14 +158,14 @@ fn handle_connection(mut storage: kv_log::KvLogStorage, mut stream: net::TcpStre
 }
 
 pub struct KvsServer {
-    thread_pool: threads::shared::SharedThreadPool,
+    thread_pool: Box<dyn threads::base::ThreadPool>,
     engine: storage::KvLogStorage,
 }
 
 impl KvsServer {
-    pub fn new(engine: storage::KvLogStorage, thread_pool_size: usize) -> KvsServer {
+    pub fn new(engine: storage::KvLogStorage, thread_pool: Box<dyn threads::base::ThreadPool>) -> KvsServer {
         KvsServer{
-            thread_pool: threads::shared::SharedThreadPool::new(thread_pool_size),
+            thread_pool: thread_pool,
             engine: engine,
         }
     }
@@ -179,12 +178,14 @@ impl KvsServer {
             match connection_result {
                 Ok(stream) => {
                     let storage = self.engine.clone();
-                    if let Err(err) = self.thread_pool.spawn(move || {
-                        match handle_connection(storage, stream) {
-                            Ok(_) => {},
-                            Err(err) => { log::error!("Request handling error: {}", err) }
-                        }
-                    }) {
+                    if let Err(err) = self.thread_pool.spawn(
+                        Box::new(move || {
+                            match handle_connection(storage, stream) {
+                                Ok(_) => {},
+                                Err(err) => { log::error!("Request handling error: {}", err) }
+                            }
+                        })
+                    ) {
                         log::error!("Cannot spawn a new thread to handle connection: {}", err);    
                     }
                 },

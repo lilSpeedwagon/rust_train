@@ -4,7 +4,7 @@ use log;
 use num_cpus;
 use simple_logger;
 
-use rust_kvs_server::{models, server, storage};
+use rust_kvs_server::{models, server, storage, threads};
 
 #[derive(clap::Parser)]
 #[command(version, about, long_about = None)]
@@ -22,8 +22,11 @@ struct Cli {
     #[arg(short, long, default_value = "info")]
     log_level: LogLevel,
     /// Server handlers thread pool size. Set to 0 for auto-selection.
-    #[arg(short, long, default_value_t = 0)]
+    #[arg(short = 's', long, default_value_t = 0)]
     thread_pool_size: usize,
+    /// Set log level
+    #[arg(short = 't', long, default_value = "shared")]
+    thread_pool: ThreadPoolType,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -32,6 +35,13 @@ enum LogLevel {
     Info,
     Warning,
     Error,
+}
+
+#[derive(Clone, ValueEnum)]
+enum ThreadPoolType {
+    Naive,
+    Shared,
+    Rayon,
 }
 
 fn main() -> models::Result<()> {
@@ -54,8 +64,13 @@ fn main() -> models::Result<()> {
     
     let storage_path = std::path::Path::new(&cli.path);
     let engine = storage::KvLogStorage::open(storage_path)?;
+    let thread_pool: Box<dyn threads::base::ThreadPool> = match cli.thread_pool {
+        ThreadPoolType::Naive => { Box::new(threads::naive::NaiveThreadPool::new()) },
+        ThreadPoolType::Shared => { Box::new(threads::shared::SharedThreadPool::new(thread_pool_size)) },
+        ThreadPoolType::Rayon => { Box::new(threads::rayon::RayonThreadPool::new(thread_pool_size)?) },
+    };
 
-    let mut server = server::KvsServer::new(engine, thread_pool_size);
+    let mut server = server::KvsServer::new(engine, thread_pool);
     server.listen(cli.host, cli.port)?;
 
     return Ok(());

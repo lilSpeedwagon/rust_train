@@ -1,5 +1,7 @@
 use crate::models;
 
+pub type Job = Box<dyn FnOnce() + Send + 'static>;
+
 pub trait ThreadPool {
-    fn spawn<F>(&mut self, job: F) -> models::Result<()> where F: FnOnce() + Send + 'static;
+    fn spawn(&mut self, job: Job) -> models::Result<()>;
 }

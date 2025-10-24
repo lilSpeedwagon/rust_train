@@ -998,6 +998,7 @@ dependencies = [
  "num_cpus",
  "predicates",
  "rand",
+ "rayon",
  "rstest",
  "scopeguard",
  "serial_test",

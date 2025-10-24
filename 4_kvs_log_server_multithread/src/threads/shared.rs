@@ -1,10 +1,8 @@
 use crossbeam::deque;
 use log;
 
-use crate::threads::base::ThreadPool;
+use crate::threads::base::{Job, ThreadPool};
 use crate::models;
-
-type Job = Box<dyn FnOnce() + Send + 'static>;
 
 enum SharedMessage {
     NewJob(Job),
@@ -75,8 +73,7 @@ impl SharedThreadPool {
 }
 
 impl ThreadPool for SharedThreadPool {
-    fn spawn<F>(&mut self, job: F) -> models::Result<()> where F: FnOnce() + Send + 'static {
-        let job = Box::new(job);
+    fn spawn(&mut self, job: Job) -> models::Result<()> {
         self.injector.push(SharedMessage::NewJob(job));
         Ok(())
     }
@@ -108,10 +105,10 @@ fn test_shared_thread_pool_executes_tasks() {
     let result = std::sync::Arc::new(std::sync::Mutex::new(0));
     let result_clone = std::sync::Arc::clone(&result);
 
-    pool.spawn(move || {
+    pool.spawn(Box::new(move || {
         let mut num = result_clone.lock().unwrap();
         *num = 42;
-    }).unwrap();
+    })).unwrap();
 
     // Wait for the task to complete
     std::thread::sleep(std::time::Duration::from_millis(50));
@@ -128,10 +125,10 @@ fn test_shared_thread_pool_multiple_tasks() {
 
     for _ in 0..10 {
         let counter_clone = std::sync::Arc::clone(&counter);
-        pool.spawn(move || {
+        pool.spawn(Box::new(move || {
             let mut num = counter_clone.lock().unwrap();
             *num += 1;
-        }).unwrap();
+        })).unwrap();
     }
 
     // Wait for all tasks to complete
@@ -148,11 +145,11 @@ fn test_shared_thread_pool_teardown() {
 
     {
         let mut pool = SharedThreadPool::new(pool_size);
-        pool.spawn(move || {
+        pool.spawn(Box::new(move || {
             std::thread::sleep(std::time::Duration::from_millis(50));
             let mut done = flag_clone.lock().unwrap();
             *done = true;
-        }).unwrap();
+        })).unwrap();
     }
     
     // Make sure even if the pool is dropped the job is finished.
@@ -166,7 +163,7 @@ fn test_shared_thread_pool_panic() {
     {
         // Run a panicking job.
         let mut pool = SharedThreadPool::new(pool_size);
-        pool.spawn(move || { panic!("Thread panicking!"); }).unwrap();
+        pool.spawn(Box::new(move || { panic!("Thread panicking!"); })).unwrap();
 
         std::thread::sleep(std::time::Duration::from_millis(50));
 
@@ -174,10 +171,10 @@ fn test_shared_thread_pool_panic() {
         let result = std::sync::Arc::new(std::sync::Mutex::new(0));
         let result_clone = std::sync::Arc::clone(&result);
 
-        pool.spawn(move || {
+        pool.spawn(Box::new(move || {
             let mut num = result_clone.lock().unwrap();
             *num = 42;
-        }).unwrap();
+        })).unwrap();
 
         std::thread::sleep(std::time::Duration::from_millis(50));
 
