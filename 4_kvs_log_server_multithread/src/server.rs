@@ -114,7 +114,7 @@ fn handle_connection(mut storage: kv_log::KvLogStorage, mut stream: net::TcpStre
         body_buffer.resize(header.body_size as usize, 0u8);
         reader.read_exact(body_buffer.as_mut_slice())?;
         drop(reader);
-        
+
         let mut body_reader = io::Cursor::new(body_buffer);
         let mut commands = Vec::new();
         for _ in 0..header.command_count {
@@ -153,7 +153,10 @@ fn handle_connection(mut storage: kv_log::KvLogStorage, mut stream: net::TcpStre
     }
 
     log::debug!("Request handled, close connection");
-    stream.shutdown(std::net::Shutdown::Both)?;
+    match stream.shutdown(std::net::Shutdown::Both) {
+        Ok(_) => {},
+        Err(err) => { log::warn!("Cannot close socket gracefully: {}", err); }
+    }
     Ok(())
 }
 
