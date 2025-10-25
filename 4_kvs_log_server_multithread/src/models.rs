@@ -71,6 +71,7 @@ pub struct ResponseHeader {
     pub reserved_2: u32,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum ResponseCommand {
     Set {},
     Get { value: Option<String> },

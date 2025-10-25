@@ -28,7 +28,3 @@ doctest = false
 [[bench]]
 name = "kvs"
 harness = false
-
-[[bench]]
-name = "sled"
-harness = false
