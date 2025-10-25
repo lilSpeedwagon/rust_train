@@ -39,6 +39,7 @@ enum LogLevel {
 
 #[derive(Clone, ValueEnum)]
 enum ThreadPoolType {
+    None,
     Naive,
     Shared,
     Rayon,
@@ -65,6 +66,7 @@ fn main() -> models::Result<()> {
     let storage_path = std::path::Path::new(&cli.path);
     let engine = storage::KvLogStorage::open(storage_path)?;
     let thread_pool: Box<dyn threads::base::ThreadPool> = match cli.thread_pool {
+        ThreadPoolType::None => { Box::new(threads::none::NoneThreadPool::new()) },
         ThreadPoolType::Naive => { Box::new(threads::naive::NaiveThreadPool::new()) },
         ThreadPoolType::Shared => { Box::new(threads::shared::SharedThreadPool::new(thread_pool_size)) },
         ThreadPoolType::Rayon => { Box::new(threads::rayon::RayonThreadPool::new(thread_pool_size)?) },

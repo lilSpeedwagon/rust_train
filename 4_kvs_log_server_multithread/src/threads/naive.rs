@@ -2,6 +2,7 @@ use crate::threads::base;
 use crate::models;
 
 
+/// A naive thread pool implementation spawning a fresh thread on each task.
 pub struct NaiveThreadPool {
     thread_handlers: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
