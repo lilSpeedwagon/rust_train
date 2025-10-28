@@ -26,5 +26,9 @@ test = false
 doctest = false
 
 [[bench]]
-name = "kvs"
+name = "pool_size"
+harness = false
+
+[[bench]]
+name = "pool_type"
 harness = false
