@@ -23,11 +23,11 @@ impl Drop for ServerGuard {
 }
 
 
-fn run_server(dir: &tempfile::TempDir, engine: &str, host: &str, port: u32) -> ServerGuard {
+fn run_server(dir: &tempfile::TempDir, host: &str, port: u32) -> ServerGuard {
     let (sender, receiver) = std::sync::mpsc::sync_channel::<()>(0);
     let mut server = Command::cargo_bin("kvs_server").unwrap();
     let mut child = server
-        .args(&["--engine", engine, "--host", host, "--port", &port.to_string(), "-l", "debug"])
+        .args(&["--host", host, "--port", &port.to_string(), "-l", "debug"])
         .current_dir(&dir)
         .spawn()
         .unwrap();
@@ -56,13 +56,11 @@ fn run_client_cmd(dir: &tempfile::TempDir, host: &str, port: u32, args: &[&str])
 }
 
 
-#[rstest::rstest]
-#[case("kvs")]
-#[case("sled")]
 #[serial_test::serial]
-fn set_get_value(#[case] engine: &str) {
+#[test]
+fn set_get_value() {
     let temp_dir = TempDir::new().unwrap();
-    let server_guard = run_server(&temp_dir, &engine, HOST, PORT);
+    let server_guard = run_server(&temp_dir, HOST, PORT);
 
     // Set some values.
     run_client_cmd(&temp_dir, HOST, PORT, &["set", "key1", "value1"])
@@ -78,7 +76,7 @@ fn set_get_value(#[case] engine: &str) {
 
     // Restart the server and check again.
     drop(server_guard);
-    let _server_guard = run_server(&temp_dir, &engine, HOST, PORT);
+    let _server_guard = run_server(&temp_dir, HOST, PORT);
 
     run_client_cmd(&temp_dir, HOST, PORT, &["get", "key1"])
         .stdout(contains("value1"));
@@ -86,13 +84,12 @@ fn set_get_value(#[case] engine: &str) {
         .stdout(contains("value2"));
 }
 
-#[rstest::rstest]
-#[case("kvs")]
-#[case("sled")]
+
 #[serial_test::serial]
-fn kvs_set_override(#[case] engine: &str) {
+#[test]
+fn kvs_set_override() {
     let temp_dir = TempDir::new().unwrap();
-    let server_guard = run_server(&temp_dir, &engine, HOST, PORT);
+    let server_guard = run_server(&temp_dir, HOST, PORT);
 
     // Set value for key.
     run_client_cmd(&temp_dir, HOST, PORT, &["set", "key", "value1"])
@@ -108,19 +105,18 @@ fn kvs_set_override(#[case] engine: &str) {
 
     // Restart the server and check again.
     drop(server_guard);
-    let _server_guard = run_server(&temp_dir, &engine, HOST, PORT);
+    let _server_guard = run_server(&temp_dir, HOST, PORT);
 
     run_client_cmd(&temp_dir, HOST, PORT, &["get", "key"])
         .stdout(contains("value2"));
 }
 
-#[rstest::rstest]
-#[case("kvs")]
-#[case("sled")]
+
 #[serial_test::serial]
-fn kvs_get_missing_value(#[case] engine: &str) {
+#[test]
+fn kvs_get_missing_value() {
     let temp_dir = TempDir::new().unwrap();
-    let _server_guard = run_server(&temp_dir, &engine, HOST, PORT);
+    let _server_guard = run_server(&temp_dir, HOST, PORT);
 
     // Get for non existing keys should return NONE.
     run_client_cmd(&temp_dir, HOST, PORT, &["get", "key1"])
@@ -129,13 +125,12 @@ fn kvs_get_missing_value(#[case] engine: &str) {
         .stdout(contains("GET NONE"));
 }
 
-#[rstest::rstest]
-#[case("kvs")]
-#[case("sled")]
+
 #[serial_test::serial]
-fn kvs_remove_key(#[case] engine: &str) {
+#[test]
+fn kvs_remove_key() {
     let temp_dir = TempDir::new().unwrap();
-    let server_guard = run_server(&temp_dir, &engine, HOST, PORT);
+    let server_guard = run_server(&temp_dir, HOST, PORT);
 
     // Set some values.
     run_client_cmd(&temp_dir, HOST, PORT, &["set", "key1", "value1"])
@@ -157,7 +152,7 @@ fn kvs_remove_key(#[case] engine: &str) {
 
     // Restart the server and check again.
     drop(server_guard);
-    let _server_guard = run_server(&temp_dir, &engine, HOST, PORT);
+    let _server_guard = run_server(&temp_dir, HOST, PORT);
 
     run_client_cmd(&temp_dir, HOST, PORT, &["get", "key1"])
         .stdout(contains("GET NONE"));
@@ -165,13 +160,12 @@ fn kvs_remove_key(#[case] engine: &str) {
         .stdout(contains("GET NONE"));
 }
 
-#[rstest::rstest]
-#[case("kvs")]
-#[case("sled")]
+
 #[serial_test::serial]
-fn kvs_remove_missing_key(#[case] engine: &str) {
+#[test]
+fn kvs_remove_missing_key() {
     let temp_dir = TempDir::new().unwrap();
-    let _server_guard = run_server(&temp_dir, &engine, HOST, PORT);
+    let _server_guard = run_server(&temp_dir, HOST, PORT);
 
     // Remove missing keys.
     run_client_cmd(&temp_dir, HOST, PORT, &["remove", "key1"])
@@ -180,13 +174,12 @@ fn kvs_remove_missing_key(#[case] engine: &str) {
         .stdout(contains("REMOVE OK"));
 }
 
-#[rstest::rstest]
-#[case("kvs")]
-#[case("sled")]
+
 #[serial_test::serial]
-fn kvs_reset(#[case] engine: &str) {
+#[test]
+fn kvs_reset() {
     let temp_dir = TempDir::new().unwrap();
-    let server_guard = run_server(&temp_dir, &engine, HOST, PORT);
+    let server_guard = run_server(&temp_dir, HOST, PORT);
 
     // Set some values.
     run_client_cmd(&temp_dir, HOST, PORT, &["set", "key1", "value1"])
@@ -206,7 +199,7 @@ fn kvs_reset(#[case] engine: &str) {
 
     // Restart the server and check again.
     drop(server_guard);
-    let _server_guard = run_server(&temp_dir, &engine, HOST, PORT);
+    let _server_guard = run_server(&temp_dir, HOST, PORT);
 
     run_client_cmd(&temp_dir, HOST, PORT, &["get", "key1"])
         .stdout(contains("GET NONE"));

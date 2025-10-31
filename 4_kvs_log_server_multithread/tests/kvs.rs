@@ -98,30 +98,43 @@ fn compaction() -> models::Result<()> {
         len.expect("fail to get directory size")
     };
 
-    let mut current_size = dir_size();
-    for iter in 0..100 {
-        for key_id in 0..10 {
-            let key = format!("key{}", key_id);
-            let value = format!("value{}-{}", key_id, iter).repeat(10000);
-            store.set(key, value)?;
-        }
+    // We expect the compaction to be triggered after inserting values with total size
+    // exceeding the max segment size.
+    let expected_segment_size = 4_000_000;
+    let values_count = 10;
+    let value_size = expected_segment_size / values_count;
+    let key = "key".to_string();
 
-        let new_size = dir_size();
-        if new_size > current_size {
-            current_size = new_size;
-            continue;
-        }
-        // Compaction triggered.
-
-        // Reopen and check content.
-        drop(store);
-        let store = storage::KvLogStorage::open(temp_dir.path())?;
-        for key_id in 0..10 {
-            let key = format!("key{}", key_id);
-            assert_eq!(store.get(key)?, Some(format!("value{}-{}", key_id, iter).repeat(10000)));
-        }
-        return Ok(());
+    let initial_size = dir_size();
+    for idx in 0..values_count - 1 {
+        let value = idx.to_string().repeat(value_size);
+        store.set(key.clone(), value)?;
     }
 
-    panic!("No compaction detected");
+    // The dir size is expected to be bigger.
+    let new_size = dir_size();
+    assert!(new_size > initial_size);
+
+    // The last insert should trigger the compaction.
+    let value = (values_count - 1).to_string().repeat(value_size);
+    store.set(key.clone(), value.clone())?;
+
+    // Wait for compaction and check the directory size.
+    let mut compaction_detected = false;
+    for _ in 0..10 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let compacted_size = dir_size();
+        if compacted_size < new_size {
+            compaction_detected = true;
+            break;
+        }
+    }
+    assert!(compaction_detected, "No compaction detected!");
+
+    // reopen the storage and check the value.
+    drop(store);
+    let store = storage::KvLogStorage::open(temp_dir.path())?;
+    assert_eq!(store.get(key)?, Some(value));
+
+    Ok(())
 }

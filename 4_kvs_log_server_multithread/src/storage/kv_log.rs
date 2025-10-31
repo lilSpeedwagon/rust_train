@@ -1,15 +1,55 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Seek};
 use std::path::{Path, PathBuf};
 use std::fs::{remove_file, rename, File, OpenOptions};
 use std::io::BufReader;
-use std::ffi::OsStr;
 use log;
+use dashmap;
 
 use crate::models::{Result, Command};
 use crate::serialize::{self, get_value_offset, ReadFromStream};
+use crate::threads;
+use crate::threads::base::ThreadPool;
 
 const MAX_SEGMENT_SIZE: u64 = 4_000_000;
+const DEFAULT_FILE_IDX: usize = 1;
+const COMPACTION_POOL_SIZE: usize = 2;
+
+/// Convert file index to the actual file path.
+fn file_idx_to_path(storage_path: &Path, file_idx: usize) -> PathBuf {
+    storage_path.join(format!("kv_{}.log", file_idx))
+}
+
+/// Convert file path to file index if some.
+fn path_to_idx(file_path: &Path) -> Option<usize> {
+    if let Some(file_stem) = file_path.file_stem() {
+        if let Some(stem_str) = file_stem.to_str() {
+            let parts = stem_str.split('_');
+            if let Some(idx_str) = parts.last() {
+                match usize::from_str_radix(idx_str, 10) {
+                    Ok(idx) => return Some(idx),
+                    Err(_) => return None,
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Get path for a temporary copy of a given file.
+fn get_tmp_file_path(storage_path: &Path, file_path: &Path) -> Result<PathBuf> {
+    if file_path.is_dir() {
+        return Err(Box::from(format!("Path {} is a directory", file_path.display())));
+    }
+
+    let file_name_opt = file_path.file_name();
+    if let None = file_name_opt {
+        return Err(Box::from(format!("Path {} is not a valid filename", file_path.display())));
+    }
+
+    let file_name = file_name_opt.unwrap().to_string_lossy();
+    Ok(storage_path.join(format!("_tmp_{}", file_name)))
+}
 
 /// A single value position index in the log storage.
 struct KvStorePosition {
@@ -17,45 +57,133 @@ struct KvStorePosition {
     file_offset: u64,
 }
 
-struct KvLogStorageImpl {
-    storage_index: HashMap<String, KvStorePosition>,
-    storage_dir: PathBuf,
-    files: Vec<PathBuf>,
-    active_file: PathBuf,
+/// Internal storage data structure to be exclusively locked during writes.
+struct KvLogStorageInternal {
+    active_file_idx: usize,
 }
 
-impl KvLogStorageImpl {
-    /// Get default log file path.
-    fn get_default_log_file_path(storage_path: &PathBuf) -> PathBuf {
-        return storage_path.join("kv_1.log");
+impl Clone for KvLogStorageInternal {
+    fn clone(&self) -> KvLogStorageInternal {
+        KvLogStorageInternal {
+            active_file_idx: self.active_file_idx,
+        }
     }
 
-    /// Get next active log file path based on the known file paths.
-    fn get_next_log_file_path(&self) -> Result<PathBuf> {
-        let storage_path = self.storage_dir.clone();
-        let files_count = self.files.len();
-        Ok(storage_path.join(format!("kv_{}.log", files_count + 1)))
+    fn clone_from(&mut self, source: &KvLogStorageInternal) {
+        *self = source.clone()
+    }
+}
+
+/// Key-value log-based storage.
+pub struct KvLogStorage {
+    internal: std::sync::Arc<std::sync::Mutex<KvLogStorageInternal>>,
+    index: std::sync::Arc<dashmap::DashMap<String, KvStorePosition>>,
+    storage_dir: PathBuf,
+    compaction_thread_pool: std::sync::Arc<std::sync::Mutex::<threads::shared::SharedThreadPool>>,
+}
+
+impl Clone for KvLogStorage {
+    fn clone(&self) -> KvLogStorage {
+        KvLogStorage {
+            index: self.index.clone(),
+            internal: self.internal.clone(),
+            storage_dir: self.storage_dir.clone(),
+            compaction_thread_pool: self.compaction_thread_pool.clone(),
+        }
     }
 
-    /// Get path for a temporary copy of a given file.
-    fn get_tmp_file_path(&self, file_path: &Path) -> Result<PathBuf> {
-        let dir_path = file_path.parent().unwrap_or(&self.storage_dir);
-        let file_name = file_path.file_name().unwrap_or(OsStr::new("kv.log")).to_string_lossy();
-        Ok(dir_path.join(format!("_tmp_{}", file_name)))
+    fn clone_from(&mut self, source: &KvLogStorage) {
+        *self = source.clone()
+    }
+}
+
+impl KvLogStorage {
+    /// Opens a directory as a log-base key-value storage.
+    pub fn open(path: &Path) -> Result<KvLogStorage> {
+        log::info!("Reading {} to restore storage", path.display());
+        let mut file_idxs = Vec::new();
+
+        // If the directory exists, read the existing storage files.
+        if path.exists() {
+            if !path.is_dir() {
+                return Err(Box::from(format!("Path {} is not a directory", path.display())));
+            }
+
+            // Read all files in the directory and store their paths in sorted order.
+            match std::fs::read_dir(path) {
+                Ok(files) => {
+                    for file_result in files {
+                        if let Ok(file) = file_result {
+                            if file.path().extension() == Some(std::ffi::OsStr::new("log")) {
+                                if let Some(file_idx) = path_to_idx(&file.path()) {
+                                    file_idxs.push(file_idx);
+                                }
+                                
+                            }
+                        }
+                    }
+                },
+                Err(e) => {
+                    return Err(Box::from(format!("Failed to read directory {}: {}", path.display(), e)));
+                }
+            }
+
+        // If the directory doesn't exist, create it.
+        } else {
+            log::info!("{} directory doesn't exist, creating", path.display());
+            match std::fs::create_dir_all(path) {
+                Ok(()) => {},
+                Err(e) => {
+                    return Err(Box::from(format!("Failed to create directory {}: {}", path.display(), e)));
+                }
+            }
+        }
+
+        // Use the latest known file as active. If no files found - use default first file.
+        file_idxs.sort();
+        let active_file_idx = *file_idxs.last().unwrap_or(&DEFAULT_FILE_IDX);
+        let file_path = file_idx_to_path(&path.to_path_buf(), active_file_idx);
+        log::info!("{} files found, active record at {}", file_idxs.len(), file_path.display());
+
+        let storage_index = Self::restore_index(path, &file_idxs)?;
+
+        Ok(
+            KvLogStorage {
+                index: std::sync::Arc::new(storage_index),
+                storage_dir: path.to_path_buf(),
+                internal: std::sync::Arc::new(
+                    std::sync::Mutex::new(
+                        KvLogStorageInternal {
+                            active_file_idx: active_file_idx,
+                        },
+                    )
+                ),
+                compaction_thread_pool: std::sync::Arc::new(
+                    std::sync::Mutex::new(
+                        threads::shared::SharedThreadPool::new(COMPACTION_POOL_SIZE)
+                    )
+                ),
+            }
+        )
     }
 
-    /// Restore storage index by reading a sorted list of log files.
-    fn restore_index(files: &Vec<PathBuf>) -> Result<HashMap::<String, KvStorePosition>> {
+    /// Restore storage index by reading a sorted list of log files (by file indexes).
+    fn restore_index(storage_dir: &Path, files_idxs: &Vec<usize>) -> Result<dashmap::DashMap::<String, KvStorePosition>> {
+        // We build a regular hashmap first as we know this method should be called
+        // in a single thread on a startup. Later we will transform this map to a thread-safe
+        // dashmap implementation.
         let mut index = HashMap::<String, KvStorePosition>::new();
 
         // Iterate through known storage files (expected to be sorted).
-        let mut file_idx = 0;
-        for file_path in files {
+        for file_idx in files_idxs {
             // Read each file using a buffered reader.
+            let file_path = &file_idx_to_path(storage_dir, *file_idx);
             let file = OpenOptions::new()
                 .read(true)
                 .open(file_path)?;
             let mut reader = BufReader::new(file);
+            let file_idx = path_to_idx(file_path)
+                .ok_or_else(|| format!("Invalid file path: {}", file_path.display()))?;
 
             // Read commands one by one until the end. Restore the index on fly.
             loop {
@@ -78,58 +206,48 @@ impl KvLogStorageImpl {
                     None => break
                 }
             }
-
-            file_idx += 1;
         }
 
-        Ok(index)
+        log::info!("Storage index is restored with {} records", index.len());
+        Ok(dashmap::DashMap::from_iter(index))
     }
 
-    fn compact_log_file(&mut self) -> Result<()> {
-        if self.files.len() == 0 {
-            log::info!("No files to compact!");
-            return Ok(());
-        }
-
-        let file_path = &self.active_file;
-        let file_idx = self.files.len() - 1;
-        log::info!("Compacting log file {}", file_path.display());
-        let mut log_file_commands: Vec<Command> = Vec::new();
+    fn compact_log_file(
+        storage_dir: PathBuf,
+        write_mutex: std::sync::Arc::<std::sync::Mutex::<KvLogStorageInternal>>,
+        index: std::sync::Arc::<dashmap::DashMap<String, KvStorePosition>>,
+        log_file_idx: usize,
+    ) -> Result<()> {
+        let log_file_path = file_idx_to_path(&storage_dir, log_file_idx);
+        log::info!("Compacting log file {}", log_file_path.display());
 
         let file = OpenOptions::new()
                 .read(true)
-                .open(&file_path)?;
+                .open(&log_file_path)?;
         let initial_file_size = File::metadata(&file)?.len();
         let mut reader = BufReader::new(&file);
-        let mut is_compacted = false;
 
-        // Read commands one by one until the end.
-        // If the key doesn't exist in the current index - it can be deleted.
-        // If the known key's position is higher than in the log - it can be deleted.
+        // Read commands one by one until the end of the file.
+        // The actual values stored in this file after compaction go to a hashmap.
+        // The tombstones for keys from previous files go to a set of tombstones to keep in the file.
+        let mut file_key_values = HashMap::<String, String>::new();
+        let mut keys_to_remove = HashSet::<String>::new();
+        let mut commands_count = 0;
         loop {
-            let file_offset = reader.stream_position()?;
             if let Some(command) = serialize::deserialize(&mut reader)? {
-                let value_offset_opt = serialize::get_value_offset(&command);
-                
-                // If "set" is found in the current index and the position
-                // matches the index position - this is the latest key value.
-                // Otherwise the found command can be compacted (ignored).
                 match command {
                     Command::Set { key, value} => {
-                        match self.storage_index.get(&key) {
-                            Some(position) => {
-                                let value_offset = file_offset + value_offset_opt.unwrap_or(0);
-                                if value_offset == position.file_offset {
-                                    log_file_commands.push(Command::Set { key, value });
-                                    continue;
-                                }
-                            },
-                            None => {},
-                        }
+                        keys_to_remove.remove(&key);
+                        file_key_values.insert(key, value);
+                        commands_count += 1;
                     },
+                    Command::Remove { key } => {
+                        file_key_values.remove(&key);
+                        keys_to_remove.insert(key);
+                        commands_count += 1;
+                    }
                     _ => {},
                 }
-                is_compacted = true;
             } else {
                 break
             }
@@ -137,30 +255,47 @@ impl KvLogStorageImpl {
         drop(reader);
         drop(file);
 
-        // If no commands ignored - no compaction required.
-        if !is_compacted {
-            log::info!("No records to compact found in {}", file_path.display());
+        // If the amount of commands matches the expected number of compacted set/remove commands,
+        // we can skip compaction.
+        if commands_count == file_key_values.len() + keys_to_remove.len() {
+            log::info!("No records to compact found in {}", log_file_path.display());
             return Ok(())
         }
 
         // If all records are compacted - just remove the file.
-        if log_file_commands.is_empty() {
-            log::info!("All records in {} are compacted. Deleting the log file.", file_path.display());
-            remove_file(file_path)?;
+        if file_key_values.is_empty() && keys_to_remove.is_empty() {
+            log::info!("All records in {} are compacted. Deleting the log file.", log_file_path.display());
+            remove_file(log_file_path)?;
             return Ok(())
         }
-        
+
         // Write the compacted commands to a temporary file.
-        // Update the position offsets in the current file,
+        // Build a new index with new value positions,
         // as the compacted records are probably shifted within the file.
-        let tmp_file_path = self.get_tmp_file_path(&file_path)?;
-        log::info!("Writing compacted records from {} to {}", file_path.display(), tmp_file_path.display());
+        
+        // Create a temporary file to write the compacted commands and then swap it with the actual file.
+        let tmp_file_path = get_tmp_file_path(&storage_dir, &log_file_path)?;
+        log::info!("Writing compacted records from {} to {}", log_file_path.display(), tmp_file_path.display());
+        if tmp_file_path.exists() {
+            log::warn!(
+                "Temporary file {} already exists. It might be a result of a previous failed compaction.",
+                tmp_file_path.display(),
+            );
+            remove_file(&tmp_file_path)?;
+        }
         let mut tmp_file = OpenOptions::new()
             .append(true)
             .create(true)
             .open(&tmp_file_path)?;
+
+        // Rebuild the index subset for the compacted file to update the value positions.
+        // Later we can merge the updated index with the actual storage index.
+        let mut file_index = HashMap::<String, KvStorePosition>::new();
+        
+        // Insert SET commands and update the index positions.
         let mut file_offset = 0u64;
-        for cmd in log_file_commands {
+        for (key, value) in file_key_values {
+            let cmd = Command::Set{ key: key.clone(), value: value };
             let serialized_command = serialize::serialize(&cmd)?;
             let bytes_written = io::Write::write(&mut tmp_file, &serialized_command)?;
             if bytes_written != serialized_command.len() {
@@ -177,71 +312,114 @@ impl KvLogStorageImpl {
                     )
                 );
             }
-            file_offset += bytes_written as u64;
+
             let value_offset = get_value_offset(&cmd).unwrap_or(0);
-            
-            // Insert new positions. We expect to see only "set" commands here.
-            // File index remains the same as we're just compactng a single file.
-            match cmd {
-                Command::Set { key, value: _ } => {
-                    self.storage_index.insert(
-                        key, KvStorePosition { file_idx: file_idx, file_offset: file_offset + value_offset }
-                    );
-                },
-                _ => {},
+            file_index.insert(
+                key, KvStorePosition { file_idx: log_file_idx, file_offset: file_offset + value_offset }
+            );
+            file_offset += bytes_written as u64;
+        }
+
+        // Insert tombstones for keys from previous files.
+        for key in keys_to_remove {
+            let cmd = Command::Remove { key: key };
+            let serialized_command = serialize::serialize(&cmd)?;
+            let bytes_written = io::Write::write(&mut tmp_file, &serialized_command)?;
+            if bytes_written != serialized_command.len() {
+                return Err(
+                    Box::from(
+                        std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!(
+                                "Unable to flush entire command, got {}/{} bytes written",
+                                bytes_written,
+                                serialized_command.len(),
+                            ),
+                        )
+                    )
+                );
             }
         }
+
+        // Flush the written content and sync the metadata.
         tmp_file.sync_all()?;
         let compacted_file_size = File::metadata(&tmp_file)?.len();
         drop(tmp_file);
 
-        // Replace the original file with a new file.
-        log::info!("Replacing {} with compacted {}", file_path.display(), tmp_file_path.display());
-        rename(tmp_file_path, &file_path)?;
+        // Acquire the storage write mutex to make actual changes in the storage files and index.
+        let _mutex_guard = write_mutex.lock().unwrap_or_else(|e| e.into_inner());
+        
+        // Replace the original file with the compacted temp file.
+        log::info!("Replacing {} with compacted {}", log_file_path.display(), tmp_file_path.display());
+        rename(tmp_file_path, &log_file_path)?;
+
+        // Update the storage index. If a key has a newer value, or doesn't exists, skip the key position update.
+        for (key, new_position) in file_index {
+            if let Some(existing_pos) = index.get(&key) {
+                if existing_pos.file_idx == log_file_idx {
+                    index.insert(key, new_position);
+                }
+            }
+        }
 
         log::info!(
             "Log file {} compaction completed: {} -> {} bytes",
-            file_path.display(), initial_file_size, compacted_file_size
+            log_file_path.display(), initial_file_size, compacted_file_size
         );
-
         Ok(())
     }
 
-    /// Set active file path to the next value and compact the currect active file.
-    fn rotate_file(&mut self) -> Result<()> {
-        self.compact_log_file()?;
+    /// Runs the compaction process in a new thread.
+    /// The compaction threads are taken from a separate thread pool guarded with a mutex.
+    /// As compaction process is relatively rare, it is not expected to cause mutex contention.
+    fn run_compaction(&self, log_file_idx: usize) {
+        let storage_dir = self.storage_dir.clone();
+        let internal = self.internal.clone();
+        let index = self.index.clone();
+        let mut pool = self.compaction_thread_pool.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(err) = pool.spawn(Box::new(move || {
+            Self::compact_log_file(storage_dir, internal, index, log_file_idx).ok();
+        })) {
+            log::error!("Cannot queue the compaction job for the log file with idx={}: {}", log_file_idx, err);
+        }
+    }
 
-        let active_file_path = self.get_next_log_file_path()?;
-        log::info!("Rotating log file to {}", active_file_path.display());
+    /// Set active file path to the next value and compact the currect active file.
+    fn rotate_file(&self, internal: &mut KvLogStorageInternal) -> Result<()> {
+        let prev_idx = internal.active_file_idx;
+        internal.active_file_idx += 1;
+        let prev_file_path = file_idx_to_path(&self.storage_dir, prev_idx);
+        let next_file_path = file_idx_to_path(&self.storage_dir, internal.active_file_idx);
         
-        self.active_file = active_file_path.clone();
-        self.files.push(active_file_path);
+        log::info!("Rotating log file {} to {}", prev_file_path.display(), next_file_path.display());
+        
+        self.run_compaction(prev_idx);
+
         Ok(())
     }
 
     /// Writes a command to the log storage.
     /// If the command contains a value, it's position is returned.
-    fn write(&mut self, cmd: Command) -> Result<Option<KvStorePosition>> {
+    fn write(&self, internal: &mut KvLogStorageInternal, cmd: Command) -> Result<Option<KvStorePosition>> {
         let serialized_command = serialize::serialize(&cmd)?;
         let command_size = serialized_command.len() as u64;
         if command_size > MAX_SEGMENT_SIZE {
             return Err(Box::from(format!("A single log entry size cannot exceed {}", MAX_SEGMENT_SIZE)));
         }
-        
-        let mut file_idx = if !self.files.is_empty() { self.files.len() - 1 } else { 0 };
+
         let mut file_offset = 0u64;
         let mut data_is_written = false;
         while !data_is_written {
+            let active_file_path = file_idx_to_path(&self.storage_dir, internal.active_file_idx);
             let mut file = OpenOptions::new()
                 .append(true)
                 .create(true)
-                .open(&self.active_file)?;
-                
+                .open(&active_file_path)?;
+
             // If the current active file exceeds max allowed size - try writing to the next file.
             let file_size = File::metadata(&file)?.len();
             if file_size + command_size > MAX_SEGMENT_SIZE {
-                self.rotate_file()?;
-                file_idx += 1;
+                self.rotate_file(internal)?;
                 continue;
             }
 
@@ -267,19 +445,22 @@ impl KvLogStorageImpl {
 
         match serialize::get_value_offset(&cmd) {
             Some(value_offset) => {
-                Ok(Some(KvStorePosition { file_idx: file_idx, file_offset: file_offset + value_offset }))
+                Ok(
+                    Some(
+                        KvStorePosition {
+                            file_idx: internal.active_file_idx,
+                            file_offset: file_offset + value_offset
+                        }
+                    )
+                )
             },
             None => Ok(None),
         }
     }
 
     /// Reads a value from the log files using the position.
-    fn read_value(&self, position: &KvStorePosition) -> Result<String> {
-        if position.file_idx >= self.files.len() {
-            return Err(Box::from(format!("Bad position: missing file with idx={}", position.file_idx)))
-        }
-
-        let file_path = &self.files[position.file_idx];
+    fn read_value(storage_path: &Path, position: &KvStorePosition) -> Result<String> {
+        let file_path = file_idx_to_path(&storage_path, position.file_idx);
         let file = OpenOptions::new().read(true).open(file_path)?;
 
         let mut reader = BufReader::new(file);
@@ -291,133 +472,39 @@ impl KvLogStorageImpl {
         }
     }
 
-    fn clear(&mut self) -> Result<()> {
-        for file_path in &self.files {
-            log::info!("Removing log file {}", file_path.display());
-            remove_file(file_path)?;
-        }
-        self.files.clear();
-        self.active_file = KvLogStorageImpl::get_default_log_file_path(&self.storage_dir);
-        self.storage_index.clear();
-        Ok(())
-    }
-
-    /// Opens a directory as a log-base key-value storage.
-    pub fn open(path: &Path) -> Result<KvLogStorageImpl> {
-        log::info!("Reading {} to restore storage", path.display());
-        let mut file_paths = Vec::new();
-
-        // If the directory exists, read the existing storage files.
-        if path.exists() {
-            if !path.is_dir() {
-                return Err(Box::from(format!("Path {} is not a directory", path.display())));
-            }
-
-            // Read all files in the directory and store their paths in sorted order.
-            match std::fs::read_dir(path) {
-                Ok(files) => {
-                    for file_result in files {
-                        if let Ok(file) = file_result {
-                            if file.path().extension() == Some(OsStr::new("log")) {
-                                file_paths.push(file.path());
-                            }
-                        }
-                    }
-                },
-                Err(e) => {
-                    return Err(Box::from(format!("Failed to read directory {}: {}", path.display(), e)));
-                }
-            }
-            file_paths.sort();
-
-        // If the directory doesn't exist, create it.
-        } else {
-            log::info!("{} directory doesn't exist, creating", path.display());
-            match std::fs::create_dir_all(path) {
-                Ok(()) => {},
-                Err(e) => {
-                    return Err(Box::from(format!("Failed to create directory {}: {}", path.display(), e)));
-                }
-            }
-        }
-
-        let storage_index = Self::restore_index(&file_paths)?;
-        log::info!("Storage index is restored with {} records", storage_index.len());
-
-        // Use the latest known file as active. If no files found - use default first file.
-        let mut active_file = Self::get_default_log_file_path(&path.to_path_buf());
-        if let Some(last_active_file) = file_paths.last() {
-            active_file = last_active_file.clone();
-            log::info!("{} files found, active record at {}", file_paths.len(), active_file.display());
-        } else {
-            file_paths.push(active_file.clone());
-            log::info!("no files found, active record at {}", active_file.display());
-        }
-
-        Ok(
-            KvLogStorageImpl {
-                storage_index: storage_index,
-                storage_dir: path.to_path_buf(),
-                files: file_paths,
-                active_file,
-            }
-        )
-    }
-}
-
-/// Key-value log-based storage.
-pub struct KvLogStorage {
-    storage: std::sync::Arc<std::sync::RwLock<KvLogStorageImpl>>,
-}
-
-impl KvLogStorage {
-    pub fn open(path: &Path) -> Result<KvLogStorage> {
-        let storage = KvLogStorageImpl::open(&path)?;
-        let synced_storage_ptr = std::sync::Arc::new(std::sync::RwLock::new(storage));
-        Ok(KvLogStorage { storage: synced_storage_ptr })
-    }
-}
-
-impl Clone for KvLogStorage {
-    fn clone(&self) -> KvLogStorage {
-        KvLogStorage { storage: self.storage.clone() }
-    }
-
-    fn clone_from(&mut self, source: &KvLogStorage) {
-        *self = source.clone()
-    }
-}
-
-impl KvLogStorage {
     /// Set key `key` to value `value`.
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
-        let mut storage = self.storage.write().unwrap_or_else(|e| e.into_inner());
-        let pos = storage.write(Command::Set { key: key.clone(), value: value })?.unwrap();
-        storage.storage_index.insert(key, pos);
+        let mut internal = match self.internal.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let cmd = Command::Set { key: key.clone(), value: value };
+        let pos = self.write(&mut internal, cmd)?.unwrap();
+        self.index.insert(key, pos);
         Ok(())
     }
 
     /// Removes key `key` from the storage.
     /// Returns `true` if the key existed.
     pub fn remove(&mut self, key: String) -> Result<bool> {
-        let mut storage = self.storage.write().unwrap_or_else(|e| e.into_inner());
-        match storage.storage_index.remove(&key) {
+        let mut internal = match self.internal.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        match self.index.remove(&key) {
             Some(_) => {
-                storage.write(Command::Remove { key: key })?;
-                return Ok(true);
+                self.write(&mut internal, Command::Remove { key: key })?;
+                Ok(true)
             },
-            None => {
-                return Ok(false);
-            },
+            None => Ok(false),
         }
     }
 
     /// Gets value with the key `key`. Returns `None` if the key doesn't exist in the storage.
     pub fn get(&self, key: String) -> Result<Option<String>> {
-        let storage = self.storage.read().unwrap_or_else(|e| e.into_inner());
-        match storage.storage_index.get(&key) {
+        match self.index.get(&key) {
             Some(position) => {
-                let value = storage.read_value(&position)?;
+                let value = Self::read_value(&self.storage_dir, &position)?;
                 Ok(Some(value))
             },
             None => Ok(None),
@@ -426,8 +513,21 @@ impl KvLogStorage {
 
     /// Removes all records in the storage.
     pub fn reset(&mut self) -> Result<()> {
-        let mut storage = self.storage.write().unwrap_or_else(|e| e.into_inner());
-        storage.clear()?;
+        let mut internal = self.internal.lock().unwrap_or_else(|e| e.into_inner());
+        for file_idx in 1..internal.active_file_idx + 1 {
+            let file_path = file_idx_to_path(&self.storage_dir, file_idx);
+            log::info!("Removing log file {}", file_path.display());
+
+            if let Err(err) = remove_file(&file_path) {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    log::warn!("Cannot delete file {}. File doesn't exist", file_path.display());
+                } else {
+                    return Err(Box::new(err));
+                }
+            }
+        }
+        internal.active_file_idx = DEFAULT_FILE_IDX;
+        self.index.clear();
         Ok(())
     }
 }

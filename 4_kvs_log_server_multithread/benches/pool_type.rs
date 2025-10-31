@@ -78,7 +78,10 @@ pub fn bench_set_pool_type(c: &mut Criterion) {
                                 let response = client.execute_one(cmd, false).unwrap();
 
                                 assert!(response.commands.len() == 1);
-                                assert!(*response.commands.first().unwrap() == models::ResponseCommand::Set{});
+                                assert!(matches!(
+                                    *response.commands.first().unwrap(),
+                                    models::ResponseCommand::Set { .. }
+                                ));
                             }
                         });
                         client_threads.push(thread);
@@ -143,10 +146,10 @@ pub fn bench_get_pool_type(c: &mut Criterion) {
                                 let response = client.execute_one(cmd, false).unwrap();
 
                                 assert!(response.commands.len() == 1);
-                                assert!(
-                                    *response.commands.first().unwrap() ==
+                                assert!(matches!(
+                                    response.commands.first().unwrap(),
                                     models::ResponseCommand::Get{value: Some(expected_value)}
-                                );
+                                ));
                             }
                         });
                         client_threads.push(thread);
